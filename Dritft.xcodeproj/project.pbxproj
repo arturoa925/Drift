@@ -45,6 +45,11 @@
 			path = DritftUITests;
 			sourceTree = "<group>";
 		};
+		699A909E2FC920BD00B05799 /* Core */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Core;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -75,6 +80,7 @@
 		699A906B2FC9209400B05799 = {
 			isa = PBXGroup;
 			children = (
+				699A909E2FC920BD00B05799 /* Core */,
 				699A90762FC9209400B05799 /* Dritft */,
 				699A90842FC9209500B05799 /* DritftTests */,
 				699A908E2FC9209500B05799 /* DritftUITests */,
@@ -109,6 +115,7 @@
 			);
 			fileSystemSynchronizedGroups = (
 				699A90762FC9209400B05799 /* Dritft */,
+				699A909E2FC920BD00B05799 /* Core */,
 			);
 			name = Dritft;
 			packageProductDependencies = (
@@ -171,7 +178,7 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
 				LastSwiftUpdateCheck = 2650;
-				LastUpgradeCheck = 2650;
+				LastUpgradeCheck = 2660;
 				TargetAttributes = {
 					699A90732FC9209400B05799 = {
 						CreatedOnToolsVersion = 26.5;
@@ -327,6 +334,7 @@
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 			};
@@ -383,6 +391,7 @@
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				VALIDATE_PRODUCT = YES;
 			};
