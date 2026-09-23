@@ -7,15 +7,12 @@
 
 import SwiftUI
 
+// Routes to onboarding vs the map, per claude.md's architecture — but
+// onboarding doesn't exist yet, so this goes straight to MapView until it
+// does.
 struct ContentView: View {
     var body: some View {
-        VStack {
-            Image(systemName: "globe")
-                .imageScale(.large)
-                .foregroundStyle(.tint)
-            Text("Hello, world!")
-        }
-        .padding()
+        MapView()
     }
 }
 
