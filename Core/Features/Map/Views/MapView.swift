@@ -14,14 +14,16 @@ import SwiftUI
 ///
 /// Only the bottom two layers exist so far: `MapGradientLayer` and a real,
 /// interactive MapKit `Map`. Everything above them — `MapOverlayView`'s
-/// low-opacity road/building treatment, `HeatmapOverlayView`,
+/// proper per-layer road/building treatment, `HeatmapOverlayView`,
 /// `TrailOverlay`, `UserPulseView`, and the floating pill controls — is
-/// still unbuilt. The plain `.opacity` below is a provisional stand-in for
-/// that "whispers on the canvas" treatment until `MapOverlayView` exists to
-/// do it properly.
+/// still unbuilt. The flat `.opacity` below approximates claude.md's "~15–18%,
+/// low opacity means the gradient bleeds through" spec with one single
+/// value, since a raw MapKit `Map` doesn't expose separate opacity for
+/// roads vs. buildings the way a custom-drawn overlay could.
 struct MapView: View {
     @StateObject private var model = MapModel()
     @State private var cameraPosition: MapCameraPosition = .automatic
+    @State private var hasCenteredOnUser = false
 
     var body: some View {
         ZStack {
@@ -31,17 +33,23 @@ struct MapView: View {
             // own UserPulseView instead of Apple's default blue dot.
             Map(position: $cameraPosition)
                 .mapStyle(.standard(pointsOfInterest: .excludingAll, showsTraffic: false))
-                .opacity(0.4)
+                .opacity(0.16)
         }
         .onAppear { model.start() }
         .onDisappear { model.stop() }
         .onChange(of: model.currentLocation) { _, newLocation in
-            guard let newLocation else { return }
+            // Only ever auto-center once, on the first fix — recentering on
+            // every update would yank the camera back if the user pans away
+            // to look at somewhere else.
+            guard !hasCenteredOnUser, let newLocation else { return }
+            hasCenteredOnUser = true
             withAnimation {
                 cameraPosition = .region(
                     MKCoordinateRegion(
                         center: newLocation.coordinate,
-                        span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
+                        // ~2 blocks in view either side of center — close
+                        // enough that individual building footprints read.
+                        span: MKCoordinateSpan(latitudeDelta: 0.004, longitudeDelta: 0.004)
                     )
                 )
             }
