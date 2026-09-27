@@ -23,12 +23,19 @@ enum PlaceholderCityGenerator {
     private static let cellSizeDegrees = 0.0006 // ~65m per cell
     private static let buildingsPerCell = 3
     private static let footprintRadiusMeters: ClosedRange<Double> = 8...20
-    private static let metersPerDegreeLatitude = 111_320.0
 
     static func buildings(near origin: CLLocationCoordinate2D, radiusMeters: Double) -> [BuildingShape] {
-        let cellSpan = Int(ceil(radiusMeters / (cellSizeDegrees * metersPerDegreeLatitude))) + 1
+        // How many cells out (in each direction) the radius could possibly
+        // reach: convert one cell's side length to meters, divide it into
+        // the radius, round up, then pad by one extra cell so a building
+        // sitting near a cell's far edge doesn't get missed.
+        let cellSpan = Int(ceil(radiusMeters / (cellSizeDegrees * WorldProjection.metersPerDegreeLatitude))) + 1
         let originCell = cell(for: origin)
 
+        // Scans a square block of cells around the origin — simple, but a
+        // circle doesn't tile into squares, so this necessarily generates
+        // some buildings past the corners that are farther than
+        // `radiusMeters` away. The filter below trims those back out.
         var candidates: [BuildingShape] = []
         for latIndex in -cellSpan...cellSpan {
             for lngIndex in -cellSpan...cellSpan {
@@ -37,6 +44,9 @@ enum PlaceholderCityGenerator {
             }
         }
 
+        // Inscribes the true circle inside the square scan above: keep only
+        // buildings whose centroid is really within `radiusMeters` in real
+        // (Euclidean) meters, not grid cells.
         return candidates.filter { building in
             guard let center = centroid(of: building.footprint) else { return false }
             let offset = WorldProjection.offset(from: origin, to: center)
@@ -44,6 +54,9 @@ enum PlaceholderCityGenerator {
         }
     }
 
+    /// Snaps a coordinate to its containing grid cell (floor division), so
+    /// every point within the same ~65m patch maps to the same cell index
+    /// — the bucketing step that makes seeding per-cell possible.
     private static func cell(for coordinate: CLLocationCoordinate2D) -> (lat: Int, lng: Int) {
         (
             Int(floor(coordinate.latitude / cellSizeDegrees)),
@@ -52,7 +65,14 @@ enum PlaceholderCityGenerator {
     }
 
     private static func buildingsInCell(_ cell: (lat: Int, lng: Int)) -> [BuildingShape] {
+        // Same seed in, same `rng` sequence out, every time this cell is
+        // asked about — `rng` is threaded (`inout`) through every building
+        // and every random draw below, so the seed alone determines this
+        // cell's entire output.
         var rng = SeededGenerator(seed: seed(for: cell))
+
+        // `cell(for:)` used `floor`, so multiplying the index back out
+        // recovers the cell's southwest corner, not its center.
         let cellOrigin = CLLocationCoordinate2D(
             latitude: Double(cell.lat) * cellSizeDegrees,
             longitude: Double(cell.lng) * cellSizeDegrees
@@ -81,23 +101,22 @@ enum PlaceholderCityGenerator {
     ) -> [CLLocationCoordinate2D] {
         let vertexCount = Int.random(in: 4...6, using: &rng)
         let baseRadius = Double.random(in: footprintRadiusMeters, using: &rng)
-        let metersPerDegreeLongitude = metersPerDegreeLatitude * cos(center.latitude * .pi / 180)
 
         return (0..<vertexCount).map { index in
+            // Evenly spaced points around a circle give a regular polygon
+            // base shape; the two jitters below are what turn it irregular.
             let angle = (Double(index) / Double(vertexCount)) * 2 * .pi
-            let jitteredAngle = angle + Double.random(in: -0.35...0.35, using: &rng)
+            let jitteredAngle = angle + Double.random(in: -0.35...0.35, using: &rng)     // ±~20°
             let jitteredRadius = baseRadius * Double.random(in: 0.7...1.15, using: &rng)
 
-            let dx = cos(jitteredAngle) * jitteredRadius
-            let dy = sin(jitteredAngle) * jitteredRadius
-
-            return CLLocationCoordinate2D(
-                latitude: center.latitude + dy / metersPerDegreeLatitude,
-                longitude: center.longitude + dx / metersPerDegreeLongitude
-            )
+            let offset = Vector2(dx: cos(jitteredAngle) * jitteredRadius, dy: sin(jitteredAngle) * jitteredRadius)
+            return WorldProjection.coordinate(from: center, offset: offset)
         }
     }
 
+    /// Plain arithmetic mean of the vertices, not a true area-weighted
+    /// polygon centroid — close enough for these small, roughly-regular
+    /// jittered footprints, and not worth the extra complexity here.
     private static func centroid(of points: [CLLocationCoordinate2D]) -> CLLocationCoordinate2D? {
         guard !points.isEmpty else { return nil }
         let latitude = points.reduce(0) { $0 + $1.latitude } / Double(points.count)
