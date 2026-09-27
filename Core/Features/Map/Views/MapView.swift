@@ -23,8 +23,7 @@ import SwiftUI
 /// geometry — proving out this renderer's sway/scale/rotation feel first,
 /// then swapping in real data (OpenStreetMap/Overpass, most likely) is a
 /// deliberate, separate next step. `MapOverlayView` (now superseded by
-/// `WorldView`), `HeatmapOverlayView`, `TrailOverlay`, `UserPulseView` (the
-/// fixed center dot the user should see themselves as), and the floating
+/// `WorldView`), `HeatmapOverlayView`, `TrailOverlay`, and the floating
 /// pill controls are all still unbuilt.
 struct MapView: View {
     @StateObject private var model = MapModel()
@@ -39,6 +38,11 @@ struct MapView: View {
         ZStack {
             MapGradientLayer(model: model)
             WorldView(origin: model.currentLocation?.coordinate, buildings: buildings)
+            UserPulseView(
+                weatherCondition: model.weatherCondition,
+                timeOfDayCondition: model.timeOfDayCondition,
+                movementState: model.movementState
+            )
         }
         .onAppear { model.start() }
         .onDisappear { model.stop() }
