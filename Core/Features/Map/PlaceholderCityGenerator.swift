@@ -20,17 +20,12 @@ import Foundation
 /// update, which would read as flicker rather than a stable world — the
 /// same cell must always produce the same buildings.
 enum PlaceholderCityGenerator {
-    private static let cellSizeDegrees = 0.0006 // ~65m per cell
     private static let buildingsPerCell = 3
     private static let footprintRadiusMeters: ClosedRange<Double> = 8...20
 
     static func buildings(near origin: CLLocationCoordinate2D, radiusMeters: Double) -> [BuildingShape] {
-        // How many cells out (in each direction) the radius could possibly
-        // reach: convert one cell's side length to meters, divide it into
-        // the radius, round up, then pad by one extra cell so a building
-        // sitting near a cell's far edge doesn't get missed.
-        let cellSpan = Int(ceil(radiusMeters / (cellSizeDegrees * WorldProjection.metersPerDegreeLatitude))) + 1
-        let originCell = cell(for: origin)
+        let cellSpan = CityGrid.cellSpan(forRadiusMeters: radiusMeters)
+        let originCell = CityGrid.cell(for: origin)
 
         // Scans a square block of cells around the origin — simple, but a
         // circle doesn't tile into squares, so this necessarily generates
@@ -54,16 +49,6 @@ enum PlaceholderCityGenerator {
         }
     }
 
-    /// Snaps a coordinate to its containing grid cell (floor division), so
-    /// every point within the same ~65m patch maps to the same cell index
-    /// — the bucketing step that makes seeding per-cell possible.
-    private static func cell(for coordinate: CLLocationCoordinate2D) -> (lat: Int, lng: Int) {
-        (
-            Int(floor(coordinate.latitude / cellSizeDegrees)),
-            Int(floor(coordinate.longitude / cellSizeDegrees))
-        )
-    }
-
     private static func buildingsInCell(_ cell: (lat: Int, lng: Int)) -> [BuildingShape] {
         // Same seed in, same `rng` sequence out, every time this cell is
         // asked about — `rng` is threaded (`inout`) through every building
@@ -71,17 +56,17 @@ enum PlaceholderCityGenerator {
         // cell's entire output.
         var rng = SeededGenerator(seed: seed(for: cell))
 
-        // `cell(for:)` used `floor`, so multiplying the index back out
-        // recovers the cell's southwest corner, not its center.
+        // `CityGrid.cell(for:)` used `floor`, so multiplying the index back
+        // out recovers the cell's southwest corner, not its center.
         let cellOrigin = CLLocationCoordinate2D(
-            latitude: Double(cell.lat) * cellSizeDegrees,
-            longitude: Double(cell.lng) * cellSizeDegrees
+            latitude: Double(cell.lat) * CityGrid.cellSizeDegrees,
+            longitude: Double(cell.lng) * CityGrid.cellSizeDegrees
         )
 
         return (0..<buildingsPerCell).map { index in
             let center = CLLocationCoordinate2D(
-                latitude: cellOrigin.latitude + Double.random(in: 0...cellSizeDegrees, using: &rng),
-                longitude: cellOrigin.longitude + Double.random(in: 0...cellSizeDegrees, using: &rng)
+                latitude: cellOrigin.latitude + Double.random(in: 0...CityGrid.cellSizeDegrees, using: &rng),
+                longitude: cellOrigin.longitude + Double.random(in: 0...CityGrid.cellSizeDegrees, using: &rng)
             )
             return BuildingShape(
                 id: "\(cell.lat)_\(cell.lng)_\(index)",

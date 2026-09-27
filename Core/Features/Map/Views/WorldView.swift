@@ -22,6 +22,7 @@ import SwiftUI
 /// than one uniform effect applied to everything at once.
 struct WorldView: View {
     let origin: CLLocationCoordinate2D?
+    let roads: [RoadSegment]
     let buildings: [BuildingShape]
 
     /// Screen points per meter. Tuned for "buildings up close" — a ~15m
@@ -31,6 +32,7 @@ struct WorldView: View {
     private let swayAmplitude: Double = .pi / 36 // ~5°
     private let proximityBoost: Double = 0.6
     private let maxScaleDistance: Double = 150
+    private let roadLineWidth: CGFloat = 7
 
     var body: some View {
         TimelineView(.animation) { timeline in
@@ -39,11 +41,50 @@ struct WorldView: View {
                 let center = CGPoint(x: size.width / 2, y: size.height / 2)
                 let time = timeline.date.timeIntervalSinceReferenceDate
 
+                // Roads first, buildings on top — streets sit at ground
+                // level, buildings stand on top of them.
+                for road in roads {
+                    draw(road, origin: origin, center: center, in: &context)
+                }
                 for building in buildings {
                     draw(building, origin: origin, center: center, time: time, in: &context)
                 }
             }
         }
+    }
+
+    private func draw(
+        _ road: RoadSegment,
+        origin: CLLocationCoordinate2D,
+        center: CGPoint,
+        in context: inout GraphicsContext
+    ) {
+        let start = point(for: road.start, origin: origin, center: center)
+        let end = point(for: road.end, origin: origin, center: center)
+
+        var path = Path()
+        path.move(to: start)
+        path.addLine(to: end)
+
+        // Matches claude.md's two road opacities — horizontal and vertical
+        // streets share the same color, just a different low opacity.
+        let opacity = road.orientation == .horizontal ? 0.16 : 0.13
+        context.stroke(
+            path,
+            with: .color(Color(hex: "B4B4BE").opacity(opacity)),
+            style: StrokeStyle(lineWidth: roadLineWidth, lineCap: .round)
+        )
+    }
+
+    private func point(for coordinate: CLLocationCoordinate2D, origin: CLLocationCoordinate2D, center: CGPoint) -> CGPoint {
+        let offset = WorldProjection.offset(from: origin, to: coordinate)
+        // Screen y grows downward, so "north" (positive dy in meters) has
+        // to flip sign here to point up — same convention `draw(_:building)`
+        // uses below.
+        return CGPoint(
+            x: center.x + CGFloat(offset.dx) * pixelsPerMeter,
+            y: center.y - CGFloat(offset.dy) * pixelsPerMeter
+        )
     }
 
     private func draw(
@@ -112,6 +153,10 @@ struct WorldView: View {
 
 #Preview {
     let origin = CLLocationCoordinate2D(latitude: 37.7749, longitude: -122.4194)
-    WorldView(origin: origin, buildings: PlaceholderCityGenerator.buildings(near: origin, radiusMeters: 220))
-        .background(Color.black)
+    WorldView(
+        origin: origin,
+        roads: PlaceholderRoadGenerator.roads(near: origin, radiusMeters: 220),
+        buildings: PlaceholderCityGenerator.buildings(near: origin, radiusMeters: 220)
+    )
+    .background(Color.black)
 }

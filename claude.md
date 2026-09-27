@@ -67,21 +67,6 @@ Drift's visual identity is driven by one function that takes two inputs — **ti
 
 ---
 
-## Heatmap
-
-Activity density shown as three concentric circles. Color inherits from the active theme.
-
-| Theme | Outer (r=30) | Mid (r=19) | Core (r=10) |
-|-------|-------------|------------|-------------|
-| Sunny | rgba(251,146,60,.20) | rgba(251,146,60,.32) | rgba(251,146,60,.45) |
-| Night | rgba(59,111,160,.25) | rgba(59,111,160,.38) | rgba(186,230,253,.50) |
-| Storm | rgba(124,106,158,.28) | rgba(124,106,158,.42) | rgba(200,184,216,.55) |
-| Rain | rgba(160,175,190,.22) | rgba(160,175,190,.34) | rgba(200,215,225,.48) |
-| Snow | rgba(147,197,253,.22) | rgba(147,197,253,.35) | rgba(219,234,254,.52) |
-| Sunrise | rgba(217,70,119,.20) | rgba(217,70,119,.32) | rgba(249,168,212,.48) |
-
----
-
 ## Movement Trail
 
 A fading dashed path that traces behind the user for ~3 seconds then dissolves.
@@ -157,7 +142,7 @@ All permission screens have a quiet "skip for now" link below the CTA.
 
 ### Main map screen
 - Full screen map
-- Gradient layer (full height) → map overlay (roads + buildings at low opacity) → heatmap → trail → pulse dot → floating controls
+- Gradient layer (full height) → map overlay (roads + buildings at low opacity) → trail → pulse dot → floating controls
 - Top center pill: weather icon + condition + time
 - Top right: settings icon pill
 - Bottom row: speed pill (left) + search bar (flex) + layers button (right)
@@ -166,7 +151,7 @@ All permission screens have a quiet "skip for now" link below the CTA.
 
 ### Settings screen
 Three sections:
-1. **Theme** — theme mode (tappable, goes to mode picker) · heatmap toggle (on) · movement trail toggle (on)
+1. **Theme** — theme mode (tappable, goes to mode picker) · movement trail toggle (on)
 2. **Motion** — map sway toggle (on) · pulse animation toggle (on)
 3. **Privacy** — pause location toggle (off, freezes theme in place) · hide trail toggle (off)
 Footer: "about drift · v0.1 · made with care"
@@ -231,7 +216,6 @@ Drift/
 │   │   ├── MapView.swift             — root map screen
 │   │   ├── MapGradientLayer.swift    — full-screen animated gradient
 │   │   ├── MapOverlayView.swift      — roads + buildings (low opacity)
-│   │   ├── HeatmapOverlay.swift      — themed concentric circles
 │   │   ├── TrailOverlay.swift        — fading dashed movement path
 │   │   └── UserPulseView.swift       — dot + speed-aware ring
 │   ├── Controls/
@@ -273,7 +257,7 @@ Drift/
 5. Location & sun — LocationManager, SunCalculator, MotionManager
 6. Map screen — MapViewModel, MapView, overlays, FloatingPill, controls
 7. Animations — SwayModifier, PulseModifier, TrailOverlay
-8. Weather & heatmap — WeatherService, HeatmapOverlay, SearchBar
+8. Weather & search — WeatherService, SearchBar
 
 ---
 
@@ -283,7 +267,6 @@ Drift/
 - **No routing/directions** — requires paid Apple developer account, excluded from phase 1
 - **Themes never go fully dark** — even night/storm always fade to a pale bottom tone
 - **Buildings/roads constant opacity** — they never change color, only the gradient changes
-- **Heatmap color inherits theme** — same activity data, different emotional expression per condition
 - **Trail fades in 2 segments** — bright close segment + dim far segment, total ~3 seconds
 - **Motion is optional permission** — app works beautifully without it, just no sway
 - **Pause location freezes theme in place** — more respectful than reverting to a default

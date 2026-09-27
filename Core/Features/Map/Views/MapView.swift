@@ -8,23 +8,24 @@
 import SwiftUI
 
 /// The map screen's root container — stacks every visual layer per
-/// claude.md's order (gradient → map overlay → heatmap → trail → pulse dot
-/// → floating controls) and owns the `MapModel` that drives all of them.
+/// claude.md's order (gradient → map overlay → trail → pulse dot → floating
+/// controls) and owns the `MapModel` that drives all of them.
 ///
 /// MapKit has been dropped entirely as a rendering surface — `WorldView`
-/// draws its own building geometry instead, always relative to the user's
-/// live location. That's what makes "the user stands still and the world
-/// moves around them" possible: there's no camera to manage here at all,
-/// since nothing is drawn in fixed map coordinates to begin with. MapKit
-/// may come back later purely as a utility (e.g. `MKLocalSearch` for place
-/// lookup), but never again as what's actually rendered on screen.
+/// draws its own road and building geometry instead, always relative to the
+/// user's live location. That's what makes "the user stands still and the
+/// world moves around them" possible: there's no camera to manage here at
+/// all, since nothing is drawn in fixed map coordinates to begin with.
+/// MapKit may come back later purely as a utility (e.g. `MKLocalSearch` for
+/// place lookup), but never again as what's actually rendered on screen.
 ///
-/// Buildings are still `PlaceholderCityGenerator` output, not real
-/// geometry — proving out this renderer's sway/scale/rotation feel first,
-/// then swapping in real data (OpenStreetMap/Overpass, most likely) is a
-/// deliberate, separate next step. `MapOverlayView` (now superseded by
-/// `WorldView`), `HeatmapOverlayView`, `TrailOverlay`, and the floating
-/// pill controls are all still unbuilt.
+/// Roads and buildings are still `PlaceholderRoadGenerator`/
+/// `PlaceholderCityGenerator` output, not real geometry — proving out this
+/// renderer's sway/scale/rotation feel first, then swapping in real data
+/// (OpenStreetMap/Overpass, most likely) is a deliberate, separate next
+/// step. `MapOverlayView` (now superseded by `WorldView`), `TrailOverlay`,
+/// and the floating pill controls are all still unbuilt; the heatmap layer
+/// claude.md originally described has been dropped from scope entirely.
 struct MapView: View {
     @StateObject private var model = MapModel()
 
@@ -37,7 +38,7 @@ struct MapView: View {
     var body: some View {
         ZStack {
             MapGradientLayer(model: model)
-            WorldView(origin: model.currentLocation?.coordinate, buildings: buildings)
+            WorldView(origin: model.currentLocation?.coordinate, roads: roads, buildings: buildings)
             UserPulseView(
                 weatherCondition: model.weatherCondition,
                 timeOfDayCondition: model.timeOfDayCondition,
@@ -46,6 +47,11 @@ struct MapView: View {
         }
         .onAppear { model.start() }
         .onDisappear { model.stop() }
+    }
+
+    private var roads: [RoadSegment] {
+        guard let origin = model.currentLocation?.coordinate else { return [] }
+        return PlaceholderRoadGenerator.roads(near: origin, radiusMeters: renderRadiusMeters)
     }
 
     private var buildings: [BuildingShape] {
