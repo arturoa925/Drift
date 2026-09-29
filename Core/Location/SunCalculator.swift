@@ -42,12 +42,34 @@ enum SunCalculator {
     }
 
     static func sunTimes(on date: Date, latitude: Double, longitude: Double) -> (sunrise: Date, sunset: Date) {
-        let daysSinceJ2000 = julianDay(for: date) - 2451545.0 + 0.0008
+        // The sunrise equation is defined per calendar day (it solves for
+        // when the sun crosses the horizon on *a* day), not per instant —
+        // using the exact fractional Julian day of `date` directly, as if
+        // "now" were itself the day count, biased the whole calculation by
+        // however many hours had elapsed since midnight (e.g. at 10:27am it
+        // computed sunrise as 12:31pm the same day).
+        //
+        // Picking "today" by rounding that raw value to the nearest whole
+        // day isn't enough either: a Julian day rolls over at UTC midnight,
+        // which for a longitude west of Greenwich (e.g. US Pacific, UTC-8ish
+        // mean solar time) falls hours *before* local midnight — 5pm local
+        // for San Francisco. Rounding in raw UTC terms flips to "tomorrow"'s
+        // sunrise/sunset the moment UTC rolls over, well before the site's
+        // own evening — which erases the sunset bucket entirely and jumps
+        // straight to "night" that afternoon.
+        //
+        // Shifting by the longitude offset before rounding (then shifting
+        // back) picks the day boundary nearest the observer's own local
+        // mean midnight instead of UTC's — this is the same "Julian cycle"
+        // step https://en.wikipedia.org/wiki/Sunrise_equation and common
+        // reference implementations (e.g. SunCalc.js) use.
+        let rawDays = julianDay(for: date) - 2451545.0
+        let julianCycle = (rawDays - 0.0009 + longitude / 360).rounded()
 
         // Longitude here is east-positive (matching CLLocationCoordinate2D),
         // so subtracting it directly gives the mean solar noon in Julian
         // days: locations west of Greenwich see solar noon later in UTC.
-        let meanSolarNoon = daysSinceJ2000 - longitude / 360
+        let meanSolarNoon = 0.0009 - longitude / 360 + julianCycle
 
         let solarMeanAnomalyDegrees = (357.5291 + 0.98560028 * meanSolarNoon)
             .truncatingRemainder(dividingBy: 360)
