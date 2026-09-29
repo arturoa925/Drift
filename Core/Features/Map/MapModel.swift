@@ -6,6 +6,7 @@
 //
 
 import Combine
+import CoreLocation
 import Foundation
 
 /// The map screen's single source of truth. Every other piece of the map —
@@ -40,6 +41,11 @@ final class MapModel: ObservableObject {
 
     var currentLocation: DeviceLocation? { locationManager.currentLocation }
     var movementState: MovementState { motionManager.movementState }
+    /// True compass heading, 0–360°. `WorldView` rotates the whole scene by
+    /// this so the direction the user is physically facing always reads as
+    /// "up" on screen — the mechanism behind turning your body sweeping the
+    /// city across the screen, even standing still.
+    var heading: CLLocationDirection? { locationManager.trueHeading }
 
     /// The theme's other input, live off `weatherService`. Computed rather
     /// than its own `@Published` copy — same reasoning as `movementState`
@@ -78,6 +84,7 @@ final class MapModel: ObservableObject {
         // for the rest of this object's life.
         observeLocation()
         observeMotion()
+        observeHeading()
         observeWeather()
         startClock()
         startWeatherClock()
@@ -133,6 +140,15 @@ final class MapModel: ObservableObject {
     /// `@Published` on MapModel itself.
     private func observeMotion() {
         motionManager.$movementState
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+    }
+
+    /// Same reasoning as `observeMotion` — heading never changes `theme`,
+    /// this just keeps views bound to `MapModel` (not `locationManager`
+    /// directly) redrawing as the compass updates.
+    private func observeHeading() {
+        locationManager.$trueHeading
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
     }

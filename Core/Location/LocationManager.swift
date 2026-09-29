@@ -22,6 +22,13 @@ final class LocationManager: NSObject, ObservableObject {
 
     @Published private(set) var authorizationStatus: CLAuthorizationStatus
     @Published private(set) var currentLocation: DeviceLocation?
+    /// True (magnetic-north-corrected) compass heading, 0-360°, `nil` until
+    /// the first reading arrives or on a device without a magnetometer.
+    /// Distinct from `DeviceLocation.heading` (GPS direction of travel,
+    /// from `location.course`) — that one only updates while actually
+    /// moving, so it can't drive a "turn your body while standing still"
+    /// rotation the way this can.
+    @Published private(set) var trueHeading: CLLocationDirection?
     @Published private(set) var error: Error?
 
     private let manager = CLLocationManager()
@@ -32,6 +39,7 @@ final class LocationManager: NSObject, ObservableObject {
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyBest
         manager.distanceFilter = 5
+        manager.headingFilter = 2
     }
 
     func requestPermission() {
@@ -40,10 +48,14 @@ final class LocationManager: NSObject, ObservableObject {
 
     func startUpdating() {
         manager.startUpdatingLocation()
+        if CLLocationManager.headingAvailable() {
+            manager.startUpdatingHeading()
+        }
     }
 
     func stopUpdating() {
         manager.stopUpdatingLocation()
+        manager.stopUpdatingHeading()
     }
 }
 
@@ -77,6 +89,17 @@ extension LocationManager: CLLocationManagerDelegate {
     nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
         Task { @MainActor in
             self.error = error
+        }
+    }
+
+    nonisolated func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
+        // A negative value means the reading is invalid (e.g. needs
+        // calibration) — magneticHeading is the fallback for devices/
+        // moments where true heading isn't available at all.
+        guard newHeading.headingAccuracy >= 0 else { return }
+        let heading = newHeading.trueHeading >= 0 ? newHeading.trueHeading : newHeading.magneticHeading
+        Task { @MainActor in
+            trueHeading = heading
         }
     }
 }

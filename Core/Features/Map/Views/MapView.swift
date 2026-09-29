@@ -38,7 +38,13 @@ struct MapView: View {
     var body: some View {
         ZStack {
             MapGradientLayer(model: model)
-            WorldView(origin: model.currentLocation?.coordinate, roads: roads, buildings: buildings)
+            WorldView(
+                origin: model.currentLocation?.coordinate,
+                heading: model.heading,
+                movementState: model.movementState,
+                roads: roads,
+                buildings: buildings
+            )
             UserPulseView(
                 weatherCondition: model.weatherCondition,
                 timeOfDayCondition: model.timeOfDayCondition,

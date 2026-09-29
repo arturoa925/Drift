@@ -20,8 +20,20 @@ import SwiftUI
 /// building's own centroid, not the scene as a whole, so a field of
 /// buildings reads as independently alive — like grass in wind — rather
 /// than one uniform effect applied to everything at once.
+///
+/// `heading` drives one more rotation on top of that, around the user
+/// instead of each building's own centroid: the whole scene turns so the
+/// direction the user is physically facing always renders as "up". That's
+/// what makes turning your body — even standing still, a 180° spin — sweep
+/// the entire city across the screen, the same way looking around a room
+/// sweeps the room across your vision.
 struct WorldView: View {
     let origin: CLLocationCoordinate2D?
+    /// True compass heading, 0–360°. `nil` (no reading yet, or heading
+    /// unavailable) renders the scene un-rotated, north-up — the same
+    /// behavior as before heading tracking existed.
+    let heading: CLLocationDirection?
+    let movementState: MovementState
     let roads: [RoadSegment]
     let buildings: [BuildingShape]
 
@@ -29,7 +41,6 @@ struct WorldView: View {
     /// footprint renders roughly 45pt wide, matching the street-level feel
     /// MapView's old MapKit zoom was aiming for.
     private let pixelsPerMeter: CGFloat = 3.0
-    private let swayAmplitude: Double = .pi / 36 // ~5°
     private let proximityBoost: Double = 0.6
     private let maxScaleDistance: Double = 150
     private let roadLineWidth: CGFloat = 7
@@ -42,7 +53,7 @@ struct WorldView: View {
     /// the farther something is, the more it sinks toward the bottom of
     /// the screen, like standing at the center of a small curved world and
     /// watching everything dip below your local horizon as it recedes.
-    private let horizonCurvature: CGFloat = 0.0006
+    private let horizonCurvature: CGFloat = 0.0011
     /// Real-world floor height — drives window row count so a wall's grid
     /// reads as "one row per story" rather than stretching a fixed row
     /// count over every building regardless of how tall it is.
@@ -105,14 +116,26 @@ struct WorldView: View {
 
     private func point(for coordinate: CLLocationCoordinate2D, origin: CLLocationCoordinate2D, center: CGPoint) -> CGPoint {
         let offset = WorldProjection.offset(from: origin, to: coordinate)
+        let rotated = rotate(offset, by: headingRotation)
         // Screen y grows downward, so "north" (positive dy in meters) has
         // to flip sign here to point up — same convention `draw(_:building)`
         // uses below.
         let flat = CGPoint(
-            x: center.x + CGFloat(offset.dx) * pixelsPerMeter,
-            y: center.y - CGFloat(offset.dy) * pixelsPerMeter
+            x: center.x + CGFloat(rotated.dx) * pixelsPerMeter,
+            y: center.y - CGFloat(rotated.dy) * pixelsPerMeter
         )
         return applyHorizonCurve(flat, center: center)
+    }
+
+    /// Radians to rotate every raw (east, north) offset by so that facing
+    /// `heading` always renders as "up" on screen. Derived from: a unit
+    /// vector at compass bearing θ is (sin θ, cos θ) in (east, north); using
+    /// `rotate(_:by:)`'s CCW convention, rotating that vector by angle = θ
+    /// lands it at (0, 1) — straight up, once the usual dy-flip into screen
+    /// space happens below. `nil` heading (no reading yet) rotates by 0,
+    /// i.e. renders north-up exactly as before heading tracking existed.
+    private var headingRotation: Double {
+        (heading ?? 0) * .pi / 180
     }
 
     /// Bends a flat-projected point downward based on its radial distance
@@ -138,7 +161,11 @@ struct WorldView: View {
         time: TimeInterval,
         in context: inout GraphicsContext
     ) {
-        let offsets = building.footprint.map { WorldProjection.offset(from: origin, to: $0) }
+        // Rotated by heading immediately, before anything else touches
+        // these — that's what makes the building's position *and* its own
+        // footprint orientation turn together as the user turns, rather
+        // than just sliding around a fixed-orientation city.
+        let offsets = building.footprint.map { rotate(WorldProjection.offset(from: origin, to: $0), by: headingRotation) }
         guard let centroid = centroid(of: offsets) else { return }
 
         // Closer to the user (in real meters, not screen distance) reads as
@@ -148,9 +175,13 @@ struct WorldView: View {
         let scale = 1 + proximity * proximityBoost
 
         // Each building's own phase/speed offsets its sway from every other
-        // building's, so the field doesn't move in lockstep.
+        // building's, so the field doesn't move in lockstep. Amplitude
+        // itself comes from `movementState` (claude.md: still = no sway,
+        // walking = 1.5°, biking = 3°) rather than a fixed constant, so nearby
+        // buildings only swoosh past while the user is actually moving.
         let swaySpeed = 0.6 + building.swayPhase * 0.4
-        let swayAngle = sin(time * swaySpeed + building.swayPhase * 2 * .pi) * swayAmplitude
+        let swayAmplitudeRadians = movementState.swayAngle * .pi / 180
+        let swayAngle = sin(time * swaySpeed + building.swayPhase * 2 * .pi) * swayAmplitudeRadians
 
         // The base footprint's screen points (before any vertical
         // extrusion) — flat on the "ground", already swayed/scaled/curved.
@@ -366,6 +397,8 @@ struct WorldView: View {
     let origin = CLLocationCoordinate2D(latitude: 37.7749, longitude: -122.4194)
     WorldView(
         origin: origin,
+        heading: nil,
+        movementState: .walking,
         roads: PlaceholderRoadGenerator.roads(near: origin, radiusMeters: 220),
         buildings: PlaceholderCityGenerator.buildings(near: origin, radiusMeters: 220)
     )
