@@ -41,23 +41,37 @@ struct WorldView: View {
     /// footprint renders roughly 45pt wide, matching the street-level feel
     /// MapView's old MapKit zoom was aiming for.
     private let pixelsPerMeter: CGFloat = 3.0
-    private let proximityBoost: Double = 0.6
-    private let maxScaleDistance: Double = 150
+    /// Real-world distance (meters) at which a building renders at its
+    /// plain, un-boosted 1x size. Below this, `scale` grows as
+    /// `proximityReferenceDistance / distance` — true inverse-distance
+    /// perspective, not a capped percentage boost — so a building actually
+    /// looms toward life-size as the user walks up to it instead of just
+    /// getting modestly bigger.
+    private let proximityReferenceDistance: Double = 45
+    /// Floor on the distance used in that division, so a building the user
+    /// is standing right on top of (distance -> 0) doesn't scale toward
+    /// infinity — this is the closest distance still on the true 1/distance
+    /// curve before it flattens out at `maxProximityScale`.
+    private let minProximityDistance: Double = 6
+    /// Hard cap on how large `scale` can get, independent of how close the
+    /// user actually gets — keeps an adjacent building from blowing out the
+    /// canvas or drawing pathologically huge paths.
+    private let maxProximityScale: Double = 6
     private let roadLineWidth: CGFloat = 9
     /// How many screen points a building's roof floats above its own
     /// footprint per meter of real height — the vertical half of
     /// `pixelsPerMeter`'s "meters to screen" conversion.
     private let heightPixelsPerMeter: CGFloat = 1.6
-    /// "Sag" applied to every rendered point based on its *horizontal*
-    /// distance from the user at screen center — the farther something is
-    /// off to either side, the more it sinks toward the bottom of the
-    /// screen. Deliberately axis-limited to left/right rather than radial
-    /// distance in every direction (which read as a horizontal dome/bowl
-    /// bowing across the whole screen): this is the vertical-axis-cylinder
-    /// version instead — like standing at the center of a can, buildings
-    /// directly ahead/behind stay level, and buildings off to either side
-    /// roll away and down around the curve.
-    private let horizonCurvature: CGFloat = 0.0011
+    /// Primary "sag" weight, applied to a point's forward/behind (screen
+    /// vertical) distance from the user — this is the axis that rolls with
+    /// whichever way the user is walking, since `headingRotation` keeps
+    /// that direction pointing up. The dominant term in the "spinning ball
+    /// underfoot" effect.
+    private let horizonCurvature: CGFloat = 0.0016
+    /// Secondary, weaker sag weight applied to horizontal (left/right)
+    /// distance — rounds out the sides so the world reads as a sphere the
+    /// user stands on top of, not a half-pipe that only curves fore/aft.
+    private let horizonCurvatureSide: CGFloat = 0.0006
     /// Real-world meters between interpolated points along a road segment
     /// before curving each one individually. Roads span the entire render
     /// radius (~220m) as a single logical line — far too long to curve
@@ -174,16 +188,22 @@ struct WorldView: View {
         (heading ?? 0) * .pi / 180
     }
 
-    /// Bends a flat-projected point downward based on its *horizontal*
-    /// distance from center only — something directly ahead or behind the
-    /// user (small dx, any dy) stays essentially level, while something off
-    /// to either side sags down proportionally to how far to the side it
-    /// is. Reads as a vertical cylinder wrapped around the user: buildings
-    /// roll away and down around the curve to the left and right, rather
-    /// than a dome bowing uniformly in every direction.
+    /// Bends a flat-projected point downward, weighted mostly by its
+    /// *vertical* (forward/behind, screen dy) distance from center rather
+    /// than horizontal — since `headingRotation` above already makes
+    /// "the direction the user is walking" always point up on screen, this
+    /// is what makes the curve roll specifically along the walking
+    /// direction: a building dead ahead crests and comes down toward the
+    /// user as they approach, one dead behind drops away over the curve,
+    /// the same way walking forward on top of a ball rolls it under your
+    /// feet along your direction of travel. A smaller secondary weight on
+    /// horizontal distance keeps the sides gently rounding too, so it reads
+    /// as a sphere the user stands on top of rather than a half-pipe that
+    /// only curves along one axis.
     private func applyHorizonCurve(_ point: CGPoint, center: CGPoint) -> CGPoint {
         let dx = point.x - center.x
-        let sag = (dx * dx) * horizonCurvature
+        let dy = point.y - center.y
+        let sag = (dy * dy) * horizonCurvature + (dx * dx) * horizonCurvatureSide
         return CGPoint(x: point.x, y: point.y + sag)
     }
 
@@ -201,11 +221,13 @@ struct WorldView: View {
         let offsets = building.footprint.map { rotate(WorldProjection.offset(from: origin, to: $0), by: headingRotation) }
         guard let centroid = centroid(of: offsets) else { return }
 
-        // Closer to the user (in real meters, not screen distance) reads as
-        // bigger — an intentional exaggeration, not real perspective.
+        // True inverse-distance perspective (in real meters, not screen
+        // distance): a building at `proximityReferenceDistance` away renders
+        // at 1x, and it grows the closer the user actually gets, capped at
+        // `maxProximityScale` — the "buildings get life-size as you approach
+        // them" effect, not just a modest fixed boost.
         let distance = hypot(centroid.dx, centroid.dy)
-        let proximity = 1 - min(distance / maxScaleDistance, 1)
-        let scale = 1 + proximity * proximityBoost
+        let scale = min(proximityReferenceDistance / max(distance, minProximityDistance), maxProximityScale)
 
         // Each building's own phase/speed offsets its sway from every other
         // building's, so the field doesn't move in lockstep. Amplitude
