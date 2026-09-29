@@ -42,26 +42,72 @@ enum PlaceholderRoadGenerator {
         // shared cell boundary from being drawn twice.
         for latIndex in minLatIndex...(maxLatIndex + 1) {
             let latitude = Double(latIndex) * CityGrid.cellSizeDegrees
-            roads.append(RoadSegment(
-                id: "h_\(latIndex)",
+            if let clipped = clip(
                 start: CLLocationCoordinate2D(latitude: latitude, longitude: minLng),
                 end: CLLocationCoordinate2D(latitude: latitude, longitude: maxLng),
-                orientation: .horizontal
-            ))
+                origin: origin,
+                radiusMeters: radiusMeters
+            ) {
+                roads.append(RoadSegment(id: "h_\(latIndex)", start: clipped.start, end: clipped.end, orientation: .horizontal))
+            }
         }
 
         // Vertical (north-south) streets: one per longitude gridline, each
         // spanning the full scanned latitude range.
         for lngIndex in minLngIndex...(maxLngIndex + 1) {
             let longitude = Double(lngIndex) * CityGrid.cellSizeDegrees
-            roads.append(RoadSegment(
-                id: "v_\(lngIndex)",
+            if let clipped = clip(
                 start: CLLocationCoordinate2D(latitude: minLat, longitude: longitude),
                 end: CLLocationCoordinate2D(latitude: maxLat, longitude: longitude),
-                orientation: .vertical
-            ))
+                origin: origin,
+                radiusMeters: radiusMeters
+            ) {
+                roads.append(RoadSegment(id: "v_\(lngIndex)", start: clipped.start, end: clipped.end, orientation: .vertical))
+            }
         }
 
         return roads
+    }
+
+    /// Trims a line segment down to the portion that actually falls within
+    /// `radiusMeters` of `origin`, `nil` if none of it does. Every generated
+    /// line spans the entire square scan area (out to each corner, ~1.4x
+    /// `radiusMeters`) so the shared-boundary dedup logic above stays
+    /// simple — but nothing downstream should actually see the part outside
+    /// the circle buildings are already filtered to, or a straight,
+    /// full-length line rendered through `WorldView`'s curved, heading-
+    /// rotated projection reads as a chaotic tangle of far-flung segments
+    /// rather than the tidy local grid it's meant to be.
+    ///
+    /// Solved as a standard line-circle intersection in flat local meters
+    /// (fine at this scale): parametrize the segment as `start + t*(end -
+    /// start)`, solve `|point(t)|² = radius²` for t, then clip `[0, 1]` down
+    /// to wherever that's satisfied.
+    private static func clip(
+        start: CLLocationCoordinate2D,
+        end: CLLocationCoordinate2D,
+        origin: CLLocationCoordinate2D,
+        radiusMeters: Double
+    ) -> (start: CLLocationCoordinate2D, end: CLLocationCoordinate2D)? {
+        let a = WorldProjection.offset(from: origin, to: start)
+        let b = WorldProjection.offset(from: origin, to: end)
+        let d = Vector2(dx: b.dx - a.dx, dy: b.dy - a.dy)
+
+        let coefficientA = d.dx * d.dx + d.dy * d.dy
+        let coefficientB = 2 * (a.dx * d.dx + a.dy * d.dy)
+        let coefficientC = a.dx * a.dx + a.dy * a.dy - radiusMeters * radiusMeters
+
+        let discriminant = coefficientB * coefficientB - 4 * coefficientA * coefficientC
+        guard discriminant >= 0, coefficientA > 0 else { return nil }
+
+        let sqrtDiscriminant = discriminant.squareRoot()
+        let t0 = max(0, (-coefficientB - sqrtDiscriminant) / (2 * coefficientA))
+        let t1 = min(1, (-coefficientB + sqrtDiscriminant) / (2 * coefficientA))
+        guard t0 < t1 else { return nil }
+
+        func point(at t: Double) -> CLLocationCoordinate2D {
+            WorldProjection.coordinate(from: origin, offset: Vector2(dx: a.dx + d.dx * t, dy: a.dy + d.dy * t))
+        }
+        return (point(at: t0), point(at: t1))
     }
 }
