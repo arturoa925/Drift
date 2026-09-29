@@ -43,6 +43,23 @@ struct WorldView: View {
     /// the screen, like standing at the center of a small curved world and
     /// watching everything dip below your local horizon as it recedes.
     private let horizonCurvature: CGFloat = 0.0006
+    /// Real-world floor height — drives window row count so a wall's grid
+    /// reads as "one row per story" rather than stretching a fixed row
+    /// count over every building regardless of how tall it is.
+    private let floorHeightMeters: Double = 3.5
+    /// Target on-screen spacing between window columns, before rounding to
+    /// a whole column count — this (not a fixed count) is what makes wide
+    /// walls get proportionally more windows than narrow ones.
+    private let windowColumnSpacing: CGFloat = 11
+    private let maxWindowRows = 14
+    private let maxWindowColumns = 7
+    private let windowWidthFraction: Double = 0.55
+    private let windowHeightFraction: Double = 0.6
+    /// Fraction of windows that render "lit" — deterministic per window
+    /// (seeded from building id + wall/row/col), not animated, since a
+    /// static occupied-looking pattern is enough to sell the effect for
+    /// the cost of one extra fill per window.
+    private let litWindowProbability: Double = 0.32
 
     var body: some View {
         TimelineView(.animation) { timeline in
@@ -158,7 +175,32 @@ struct WorldView: View {
         let extrusion = CGPoint(x: 0, y: -CGFloat(building.height) * heightPixelsPerMeter * CGFloat(scale))
         let roofPoints = basePoints.map { CGPoint(x: $0.x + extrusion.x, y: $0.y + extrusion.y) }
 
-        drawSideWalls(basePoints: basePoints, roofPoints: roofPoints, extrusion: extrusion, in: &context)
+        // Real, un-swayed edge lengths (meters), one per wall — used only
+        // to size the window grid. Sway rotation preserves edge length
+        // exactly, so in theory reading it off `basePoints` post-sway would
+        // give the same number; in practice `basePoints` is also passed
+        // through `applyHorizonCurve`, which bends each vertex by a
+        // slightly different amount as sway continuously moves them
+        // through screen space. That sub-pixel wobble was enough to flip
+        // the rounded column count frame to frame — most visible on small,
+        // distant buildings — reading as windows "flashing" or buildings
+        // seeming to redraw multiple times. Sizing the grid from the
+        // static real-world footprint instead makes column count immune
+        // to both sway and the horizon curve.
+        let edgeLengthsMeters: [Double] = (0..<offsets.count).map { index in
+            let next = (index + 1) % offsets.count
+            return hypot(offsets[next].dx - offsets[index].dx, offsets[next].dy - offsets[index].dy)
+        }
+
+        drawSideWalls(
+            basePoints: basePoints,
+            roofPoints: roofPoints,
+            extrusion: extrusion,
+            edgeLengthsMeters: edgeLengthsMeters,
+            scale: scale,
+            buildingID: building.id,
+            in: &context
+        )
 
         var roofPath = Path()
         roofPath.move(to: roofPoints[0])
@@ -178,6 +220,9 @@ struct WorldView: View {
         basePoints: [CGPoint],
         roofPoints: [CGPoint],
         extrusion: CGPoint,
+        edgeLengthsMeters: [Double],
+        scale: Double,
+        buildingID: String,
         in context: inout GraphicsContext
     ) {
         let count = basePoints.count
@@ -204,7 +249,100 @@ struct WorldView: View {
             // enough to sell the box as three-dimensional.
             context.fill(wall, with: .color(.white.opacity(0.14)))
             context.stroke(wall, with: .color(.white.opacity(0.22)), lineWidth: 1)
+
+            drawWindows(
+                origin: basePoints[index],
+                right: edge,
+                up: extrusion,
+                edgeMeters: edgeLengthsMeters[index],
+                scale: scale,
+                buildingID: buildingID,
+                wallIndex: index,
+                in: &context
+            )
         }
+    }
+
+    /// Fills a grid of small window rects across one wall face. The wall is
+    /// a parallelogram (roof is just the base translated by `extrusion`),
+    /// so every window corner is a plain affine combination of `origin`,
+    /// `right` (the base edge) and `up` (the extrusion) — no per-wall
+    /// projection math needed beyond what `drawSideWalls` already has.
+    private func drawWindows(
+        origin: CGPoint,
+        right: CGPoint,
+        up: CGPoint,
+        edgeMeters: Double,
+        scale: Double,
+        buildingID: String,
+        wallIndex: Int,
+        in context: inout GraphicsContext
+    ) {
+        guard edgeMeters > 0 else { return }
+
+        // Column/row counts are both sized from stable, real-world inputs
+        // (the footprint's own edge length and the building's own height)
+        // rather than measured off `right`/`up` directly — those two
+        // vectors move every frame with sway and the horizon curve, and
+        // rounding a continuously wobbling length to a whole window count
+        // flickers the grid. `edgeMeters` and `heightPixelsPerMeter`'s
+        // meter basis don't wobble; only `scale` (real distance, changes
+        // gradually) moves them, which is fine.
+        let wallWidthPoints = edgeMeters * Double(pixelsPerMeter) * scale
+        let wallHeightMeters = Double(hypot(up.x, up.y)) / (Double(heightPixelsPerMeter) * scale)
+        guard wallWidthPoints > 1, wallHeightMeters > 0 else { return }
+
+        let columns = min(maxWindowColumns, max(1, Int((wallWidthPoints / Double(windowColumnSpacing)).rounded())))
+        let rows = min(maxWindowRows, max(1, Int((wallHeightMeters / floorHeightMeters).rounded())))
+        guard columns > 0, rows > 0 else { return }
+
+        var rng = SeededGenerator(seed: windowSeed(buildingID: buildingID, wallIndex: wallIndex))
+
+        for row in 0..<rows {
+            for column in 0..<columns {
+                let isLit = Double.random(in: 0..<1, using: &rng) < litWindowProbability
+
+                let u = (Double(column) + 0.5) / Double(columns)
+                let v = (Double(row) + 0.5) / Double(rows)
+                let halfWidth = windowWidthFraction / Double(columns) / 2
+                let halfHeight = windowHeightFraction / Double(rows) / 2
+
+                func point(_ u: Double, _ v: Double) -> CGPoint {
+                    CGPoint(
+                        x: origin.x + CGFloat(u) * right.x + CGFloat(v) * up.x,
+                        y: origin.y + CGFloat(u) * right.y + CGFloat(v) * up.y
+                    )
+                }
+
+                var window = Path()
+                window.move(to: point(u - halfWidth, v - halfHeight))
+                window.addLine(to: point(u + halfWidth, v - halfHeight))
+                window.addLine(to: point(u + halfWidth, v + halfHeight))
+                window.addLine(to: point(u - halfWidth, v + halfHeight))
+                window.closeSubpath()
+
+                if isLit {
+                    context.fill(window, with: .color(Color(hex: "FDE68A").opacity(0.55)))
+                } else {
+                    context.fill(window, with: .color(.white.opacity(0.10)))
+                }
+            }
+        }
+    }
+
+    /// Same FNV-1a mixing `PlaceholderCityGenerator.seed(for:)` uses for
+    /// grid cells, applied to a building+wall pair instead — keeps each
+    /// wall's window pattern stable across redraws without tying it to
+    /// Swift's per-process string hashing.
+    private func windowSeed(buildingID: String, wallIndex: Int) -> UInt64 {
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in buildingID.utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 0x100000001b3
+        }
+        hash ^= UInt64(wallIndex)
+        hash = hash &* 0x100000001b3
+        return hash
     }
 
     private func rotate(_ vector: Vector2, by angle: Double) -> Vector2 {
