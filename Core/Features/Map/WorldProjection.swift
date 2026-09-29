@@ -54,8 +54,7 @@ enum WorldProjection {
     /// poles. At San Francisco's ~37.7°N, `cos(37.7°) ≈ 0.79` — a degree of
     /// longitude there is only ~79% as many meters as a degree of latitude.
     static func offset(from origin: CLLocationCoordinate2D, to point: CLLocationCoordinate2D) -> Vector2 {
-        let metersPerDegreeLongitude = metersPerDegreeLatitude * cos(origin.latitude * .pi / 180)
-        let dx = (point.longitude - origin.longitude) * metersPerDegreeLongitude
+        let dx = (point.longitude - origin.longitude) * metersPerDegreeLongitude(atLatitude: origin.latitude)
         let dy = (point.latitude - origin.latitude) * metersPerDegreeLatitude
         return Vector2(dx: dx, dy: dy)
     }
@@ -63,10 +62,17 @@ enum WorldProjection {
     /// Inverse of `offset(from:to:)` — the coordinate `offset` meters
     /// east/north of `origin`.
     static func coordinate(from origin: CLLocationCoordinate2D, offset: Vector2) -> CLLocationCoordinate2D {
-        let metersPerDegreeLongitude = metersPerDegreeLatitude * cos(origin.latitude * .pi / 180)
-        return CLLocationCoordinate2D(
+        CLLocationCoordinate2D(
             latitude: origin.latitude + offset.dy / metersPerDegreeLatitude,
-            longitude: origin.longitude + offset.dx / metersPerDegreeLongitude
+            longitude: origin.longitude + offset.dx / metersPerDegreeLongitude(atLatitude: origin.latitude)
         )
+    }
+
+    /// The `cos(latitude)` equirectangular correction described above,
+    /// pulled out so callers that need to reason about degrees-to-meters
+    /// scale directly (e.g. `PlaceholderCityGenerator` keeping a building's
+    /// footprint clear of its cell's edges) don't each recompute it inline.
+    static func metersPerDegreeLongitude(atLatitude latitude: Double) -> Double {
+        metersPerDegreeLatitude * cos(latitude * .pi / 180)
     }
 }

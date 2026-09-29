@@ -21,7 +21,20 @@ import Foundation
 /// same cell must always produce the same buildings.
 enum PlaceholderCityGenerator {
     private static let buildingsPerCell = 3
-    private static let footprintRadiusMeters: ClosedRange<Double> = 8...20
+    // Width/depth drawn independently, so a cell can produce anything from
+    // a small square kiosk to a long rectangular block — "shapes of all
+    // sizes" without abandoning the rectangular footprint real buildings
+    // actually have.
+    private static let widthMeters: ClosedRange<Double> = 6...26
+    private static let depthMeters: ClosedRange<Double> = 6...26
+    // A small rotation jitter so a field of buildings doesn't read as a
+    // perfectly regular grid of identical boxes.
+    private static let rotationRadians: ClosedRange<Double> = -0.3...0.3
+    private static let heightMeters: ClosedRange<Double> = 8...70
+    // Flat clearance (beyond the worst-case footprint extent) kept between
+    // a building's edge and the road line running along its cell's
+    // boundary, so buildings never visually overlap the street grid.
+    private static let roadClearanceMeters = 3.0
 
     static func buildings(near origin: CLLocationCoordinate2D, radiusMeters: Double) -> [BuildingShape] {
         let cellSpan = CityGrid.cellSpan(forRadiusMeters: radiusMeters)
@@ -62,40 +75,82 @@ enum PlaceholderCityGenerator {
             latitude: Double(cell.lat) * CityGrid.cellSizeDegrees,
             longitude: Double(cell.lng) * CityGrid.cellSizeDegrees
         )
+        let metersPerDegreeLongitude = WorldProjection.metersPerDegreeLongitude(atLatitude: cellOrigin.latitude)
 
         return (0..<buildingsPerCell).map { index in
+            // Width/depth/rotation are drawn *before* the center, because
+            // keeping a building clear of the road grid means knowing how
+            // big its footprint could get before deciding where its center
+            // is even allowed to land.
+            let width = Double.random(in: widthMeters, using: &rng)
+            let depth = Double.random(in: depthMeters, using: &rng)
+            let rotation = Double.random(in: rotationRadians, using: &rng)
+            let extentMeters = hypot(width / 2, depth / 2) + roadClearanceMeters
+
             let center = CLLocationCoordinate2D(
-                latitude: cellOrigin.latitude + Double.random(in: 0...CityGrid.cellSizeDegrees, using: &rng),
-                longitude: cellOrigin.longitude + Double.random(in: 0...CityGrid.cellSizeDegrees, using: &rng)
+                latitude: cellOrigin.latitude + Double.random(
+                    in: centerRange(extentMeters: extentMeters, metersPerDegree: WorldProjection.metersPerDegreeLatitude),
+                    using: &rng
+                ),
+                longitude: cellOrigin.longitude + Double.random(
+                    in: centerRange(extentMeters: extentMeters, metersPerDegree: metersPerDegreeLongitude),
+                    using: &rng
+                )
             )
             return BuildingShape(
                 id: "\(cell.lat)_\(cell.lng)_\(index)",
-                footprint: randomFootprint(center: center, rng: &rng),
+                footprint: rectangleFootprint(center: center, width: width, depth: depth, rotation: rotation),
+                height: Double.random(in: heightMeters, using: &rng),
                 swayPhase: Double.random(in: 0..<1, using: &rng)
             )
         }
     }
 
-    /// Builds an irregular polygon (4-6 vertices, jittered angle and
-    /// radius) around `center`, rather than a plain rectangle — real
-    /// building footprints aren't rectangles either, and the variety
-    /// matters for the "different shapes" the renderer is meant to show.
-    private static func randomFootprint(
+    /// Where within a cell (as a degree offset from its southwest corner) a
+    /// building's center is allowed to land, given how far its footprint
+    /// could reach (`extentMeters`) from that center in the worst case.
+    /// Collapses to the cell's exact midpoint if the footprint is too big
+    /// to fit with any clearance at all, rather than producing an invalid
+    /// (empty) range.
+    private static func centerRange(extentMeters: Double, metersPerDegree: Double) -> ClosedRange<Double> {
+        let extentDegrees = extentMeters / metersPerDegree
+        let midpoint = CityGrid.cellSizeDegrees / 2
+        let low = min(extentDegrees, midpoint)
+        let high = max(CityGrid.cellSizeDegrees - extentDegrees, midpoint)
+        return low...high
+    }
+
+    /// Builds a simple rectangular footprint (4 corners), gently rotated
+    /// for variety — real city blocks are predominantly rectangular, and
+    /// `WorldView`'s 3D extrusion (a roof + backface-culled side walls)
+    /// only reads as a believable building when its base shape has flat,
+    /// straight edges to extrude.
+    private static func rectangleFootprint(
         center: CLLocationCoordinate2D,
-        rng: inout SeededGenerator
+        width: Double,
+        depth: Double,
+        rotation: Double
     ) -> [CLLocationCoordinate2D] {
-        let vertexCount = Int.random(in: 4...6, using: &rng)
-        let baseRadius = Double.random(in: footprintRadiusMeters, using: &rng)
+        let halfWidth = width / 2
+        let halfDepth = depth / 2
+        // Corners in a local, unrotated frame centered on `center`, in
+        // meters (east, north) — order matters here: it's what `WorldView`
+        // relies on to know which edges are front-facing walls.
+        let localCorners: [Vector2] = [
+            Vector2(dx: -halfWidth, dy: -halfDepth),
+            Vector2(dx: halfWidth, dy: -halfDepth),
+            Vector2(dx: halfWidth, dy: halfDepth),
+            Vector2(dx: -halfWidth, dy: halfDepth),
+        ]
 
-        return (0..<vertexCount).map { index in
-            // Evenly spaced points around a circle give a regular polygon
-            // base shape; the two jitters below are what turn it irregular.
-            let angle = (Double(index) / Double(vertexCount)) * 2 * .pi
-            let jitteredAngle = angle + Double.random(in: -0.35...0.35, using: &rng)     // ±~20°
-            let jitteredRadius = baseRadius * Double.random(in: 0.7...1.15, using: &rng)
-
-            let offset = Vector2(dx: cos(jitteredAngle) * jitteredRadius, dy: sin(jitteredAngle) * jitteredRadius)
-            return WorldProjection.coordinate(from: center, offset: offset)
+        let cosR = cos(rotation)
+        let sinR = sin(rotation)
+        return localCorners.map { local in
+            let rotated = Vector2(
+                dx: local.dx * cosR - local.dy * sinR,
+                dy: local.dx * sinR + local.dy * cosR
+            )
+            return WorldProjection.coordinate(from: center, offset: rotated)
         }
     }
 

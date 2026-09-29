@@ -21,6 +21,12 @@ struct BuildingShape: Identifiable {
     /// is, every time it redraws.
     let footprint: [CLLocationCoordinate2D]
 
+    /// How tall this building is, in meters. `WorldView` turns this into a
+    /// vertical screen-space extrusion (the roof floats this "high" above
+    /// the footprint) to give buildings a pseudo-3D block appearance
+    /// instead of a flat silhouette.
+    let height: Double
+
     /// 0..<1, chosen once at generation time (not derived from `id`, since
     /// Swift's string hashing is randomized per process and wouldn't stay
     /// deterministic across launches). Gives each building its own

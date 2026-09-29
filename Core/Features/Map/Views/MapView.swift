@@ -45,6 +45,12 @@ struct MapView: View {
                 movementState: model.movementState
             )
         }
+        // Full-bleed on purpose: `WorldView`'s Canvas and `UserPulseView`
+        // both center on this ZStack's own bounds, so it needs to span the
+        // entire screen (under the status bar/notch/home indicator too) —
+        // otherwise safe-area insets would shrink its frame and pull the
+        // pulse dot away from the screen's true visual center.
+        .ignoresSafeArea()
         .onAppear { model.start() }
         .onDisappear { model.stop() }
     }
