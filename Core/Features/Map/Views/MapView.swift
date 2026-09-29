@@ -29,11 +29,14 @@ import SwiftUI
 struct MapView: View {
     @StateObject private var model = MapModel()
 
-    /// How far out buildings get generated/rendered. Kept modest — this is
-    /// placeholder geometry computed fresh on every location update, not
-    /// cached, so there's no reason to ask for more than the screen can
-    /// actually show.
-    private let renderRadiusMeters: Double = 220
+    /// How far out buildings/roads get generated/rendered — roughly 2.5
+    /// `CityGrid` blocks (~65m each) in every direction. Was 220m (~3.4
+    /// blocks); pulled in further so the world reads as "what's actually
+    /// nearby" rather than the full render radius the curved/scaled
+    /// perspective can otherwise make visible all at once.
+    private var renderRadiusMeters: Double {
+        CityGrid.cellSizeDegrees * WorldProjection.metersPerDegreeLatitude * 2.5
+    }
 
     var body: some View {
         ZStack {
