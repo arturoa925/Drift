@@ -48,12 +48,24 @@ struct WorldView: View {
     /// footprint per meter of real height — the vertical half of
     /// `pixelsPerMeter`'s "meters to screen" conversion.
     private let heightPixelsPerMeter: CGFloat = 1.6
-    /// Radial "sag" applied to every rendered point based on its straight-
-    /// line distance from the user at screen center, in *any* direction —
-    /// the farther something is, the more it sinks toward the bottom of
-    /// the screen, like standing at the center of a small curved world and
-    /// watching everything dip below your local horizon as it recedes.
+    /// "Sag" applied to every rendered point based on its *horizontal*
+    /// distance from the user at screen center — the farther something is
+    /// off to either side, the more it sinks toward the bottom of the
+    /// screen. Deliberately axis-limited to left/right rather than radial
+    /// distance in every direction (which read as a horizontal dome/bowl
+    /// bowing across the whole screen): this is the vertical-axis-cylinder
+    /// version instead — like standing at the center of a can, buildings
+    /// directly ahead/behind stay level, and buildings off to either side
+    /// roll away and down around the curve.
     private let horizonCurvature: CGFloat = 0.0011
+    /// Real-world meters between interpolated points along a road segment
+    /// before curving each one individually. Roads span the entire render
+    /// radius (~220m) as a single logical line — far too long to curve
+    /// correctly by bending only its two endpoints and drawing a straight
+    /// line between them, the way a building's footprint (~10-20m across)
+    /// safely can. This keeps the curve looking smooth along the line's
+    /// whole length instead of just yanking its far ends around.
+    private let roadCurveSampleMeters: Double = 12
     /// Real-world floor height — drives window row count so a wall's grid
     /// reads as "one row per story" rather than stretching a fixed row
     /// count over every building regardless of how tall it is.
@@ -97,12 +109,33 @@ struct WorldView: View {
         center: CGPoint,
         in context: inout GraphicsContext
     ) {
-        let start = point(for: road.start, origin: origin, center: center)
-        let end = point(for: road.end, origin: origin, center: center)
+        // Sampled as a polyline, not a single straight line between the two
+        // far-apart endpoints — a road spans the entire render radius
+        // (~220m), and the horizon curve is nonlinear, so curving only the
+        // endpoints and drawing a straight line between them swings wildly
+        // off the road's true (curved) path. Interpolating in real
+        // lat/lng space every `roadCurveSampleMeters` and curving each
+        // sample individually keeps the drawn line hugging the curve.
+        let lengthMeters = hypot(
+            WorldProjection.offset(from: road.start, to: road.end).dx,
+            WorldProjection.offset(from: road.start, to: road.end).dy
+        )
+        let steps = max(1, Int((lengthMeters / roadCurveSampleMeters).rounded(.up)))
 
         var path = Path()
-        path.move(to: start)
-        path.addLine(to: end)
+        for step in 0...steps {
+            let t = Double(step) / Double(steps)
+            let coordinate = CLLocationCoordinate2D(
+                latitude: road.start.latitude + (road.end.latitude - road.start.latitude) * t,
+                longitude: road.start.longitude + (road.end.longitude - road.start.longitude) * t
+            )
+            let screenPoint = point(for: coordinate, origin: origin, center: center)
+            if step == 0 {
+                path.move(to: screenPoint)
+            } else {
+                path.addLine(to: screenPoint)
+            }
+        }
 
         // Matches claude.md's two road opacities — horizontal and vertical
         // streets share the same color, just a different low opacity.
@@ -138,19 +171,16 @@ struct WorldView: View {
         (heading ?? 0) * .pi / 180
     }
 
-    /// Bends a flat-projected point downward based on its radial distance
-    /// from center, in every direction — not just left/right — so
-    /// something directly "above" or "below" the user on screen sags just
-    /// as much as something to the side. Cheap enough to apply to every
-    /// point in the scene (roads and buildings alike) without any real
-    /// spherical/dome math, and it reads as the ground curving away
-    /// underfoot in every direction rather than a flat plane viewed
-    /// edge-on.
+    /// Bends a flat-projected point downward based on its *horizontal*
+    /// distance from center only — something directly ahead or behind the
+    /// user (small dx, any dy) stays essentially level, while something off
+    /// to either side sags down proportionally to how far to the side it
+    /// is. Reads as a vertical cylinder wrapped around the user: buildings
+    /// roll away and down around the curve to the left and right, rather
+    /// than a dome bowing uniformly in every direction.
     private func applyHorizonCurve(_ point: CGPoint, center: CGPoint) -> CGPoint {
         let dx = point.x - center.x
-        let dy = point.y - center.y
-        let distance = sqrt(dx * dx + dy * dy)
-        let sag = (distance * distance) * horizonCurvature
+        let sag = (dx * dx) * horizonCurvature
         return CGPoint(x: point.x, y: point.y + sag)
     }
 
