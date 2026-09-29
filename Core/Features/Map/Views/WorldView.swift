@@ -43,7 +43,7 @@ struct WorldView: View {
     private let pixelsPerMeter: CGFloat = 3.0
     private let proximityBoost: Double = 0.6
     private let maxScaleDistance: Double = 150
-    private let roadLineWidth: CGFloat = 7
+    private let roadLineWidth: CGFloat = 9
     /// How many screen points a building's roof floats above its own
     /// footprint per meter of real height — the vertical half of
     /// `pixelsPerMeter`'s "meters to screen" conversion.
@@ -137,9 +137,12 @@ struct WorldView: View {
             }
         }
 
-        // Matches claude.md's two road opacities — horizontal and vertical
-        // streets share the same color, just a different low opacity.
-        let opacity = road.orientation == .horizontal ? 0.16 : 0.13
+        // Bumped well past claude.md's original 0.16/0.13 — with buildings
+        // now rendered as filled, windowed 3D boxes instead of thin
+        // outlines, that original "whisper" opacity reads as barely there
+        // underneath them. Horizontal and vertical streets keep their
+        // original relative difference, just scaled up together.
+        let opacity = road.orientation == .horizontal ? 0.42 : 0.34
         context.stroke(
             path,
             with: .color(Color(hex: "B4B4BE").opacity(opacity)),
