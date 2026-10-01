@@ -38,8 +38,11 @@ final class LocationManager: NSObject, ObservableObject {
         super.init()
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyBest
-        manager.distanceFilter = 5
-        manager.headingFilter = 2
+        // Every fix and every degree, unthrottled — `WorldMotion` smooths
+        // these into continuous motion, and a 5m/2° filter made the world
+        // visibly jump in 5m/2° steps between them.
+        manager.distanceFilter = kCLDistanceFilterNone
+        manager.headingFilter = 1
     }
 
     func requestPermission() {

@@ -31,6 +31,9 @@ struct WorldView: View {
     /// True compass heading, 0–360°. `nil` (no reading yet, or heading
     /// unavailable) renders facing north.
     let heading: CLLocationDirection?
+    /// The user's velocity at the latest fix, (east, north) m/s — what
+    /// `WorldMotion` dead-reckons along between fixes.
+    let velocity: Vector2
     let movementState: MovementState
     let roads: [RoadSegment]
     let buildings: [BuildingShape]
@@ -91,19 +94,39 @@ struct WorldView: View {
     /// (seeded from building id + wall), not animated.
     private let litWindowProbability: Double = 0.32
 
+    /// Fraction of `movementState.swayAngle` the idle breeze uses — the
+    /// full 1.5°/3° read as the whole city wobbling, not a breeze.
+    private let breezeScale: Double = 0.35
+    /// Swoosh: how far (degrees) a building leans per m/s the street is
+    /// moving past it, from walking/riding along it.
+    private let swooshDegreesPerMeterPerSecond: Double = 2.5
+    /// Same, for motion that comes from the user turning — far smaller,
+    /// since turning sweeps distant buildings past very fast, and turning
+    /// is mostly just looking around, not traveling.
+    private let turnSwooshDegreesPerMeterPerSecond: Double = 0.12
+    /// Turning alone never leans a building further than this.
+    private let maxTurnSwooshDegrees: Double = 2.5
+    /// Distance (meters) at which the swoosh has dropped to half strength —
+    /// buildings right beside the user react most.
+    private let swooshFalloffMeters: Double = 20
+    private let maxSwooshDegrees: Double = 7
+
+    @State private var motion = WorldMotion()
+
     var body: some View {
         TimelineView(.animation) { timeline in
             Canvas { context, size in
                 guard let origin else { return }
                 let camera = makeCamera(size: size)
                 let time = timeline.date.timeIntervalSinceReferenceDate
+                let frame = motion.advance(origin: origin, velocity: velocity, heading: heading, now: time)
 
                 // Roads first, buildings on top — streets sit at ground
                 // level, buildings stand on top of them.
-                drawRoads(origin: origin, camera: camera, in: &context)
+                drawRoads(origin: frame.origin, rotation: frame.rotation, camera: camera, in: &context)
 
                 let skyClip = skyRegion(camera: camera, size: size)
-                for item in sortedBuildings(origin: origin, camera: camera) {
+                for item in sortedBuildings(origin: frame.origin, rotation: frame.rotation, camera: camera) {
                     if item.isPastHorizon, let skyClip {
                         // Past the horizon, the planet itself hides the
                         // building's lower part — only what pokes up into
@@ -113,9 +136,9 @@ struct WorldView: View {
                         // which the occlusion knock-out in `draw` needs.
                         var clipped = context
                         clipped.clip(to: skyClip)
-                        draw(item, camera: camera, time: time, in: &clipped)
+                        draw(item, camera: camera, time: time, frame: frame, in: &clipped)
                     } else {
-                        draw(item, camera: camera, time: time, in: &context)
+                        draw(item, camera: camera, time: time, frame: frame, in: &context)
                     }
                 }
             }
@@ -138,14 +161,6 @@ struct WorldView: View {
             principalPoint: CGPoint(x: size.width / 2, y: size.height * Self.userScreenAnchorY),
             nearPlane: nearPlaneMeters
         )
-    }
-
-    /// Radians to rotate every raw (east, north) offset by so that facing
-    /// `heading` always points "forward" (+y). A unit vector at compass
-    /// bearing θ is (sin θ, cos θ) in (east, north); rotating it CCW by θ
-    /// lands it on (0, 1).
-    private var headingRotation: Double {
-        (heading ?? 0) * .pi / 180
     }
 
     /// Ground offset (meters, heading-rotated: x right, y forward) lifted
@@ -215,7 +230,11 @@ struct WorldView: View {
 
     // MARK: - Roads
 
-    private func drawRoads(origin: CLLocationCoordinate2D, camera: StreetCamera, in context: inout GraphicsContext) {
+    /// `rotation` turns raw (east, north) offsets so the user's heading
+    /// points "forward" (+y): a unit vector at compass bearing θ is
+    /// (sin θ, cos θ) in (east, north), and rotating it CCW by θ lands it
+    /// on (0, 1).
+    private func drawRoads(origin: CLLocationCoordinate2D, rotation: Double, camera: StreetCamera, in context: inout GraphicsContext) {
         // One path per orientation, filled once — overlapping quads (at
         // intersections, and where a road's own segments meet) then fill
         // as a single shape instead of stacking their opacity.
@@ -224,8 +243,8 @@ struct WorldView: View {
         var centerDashes = Path()
 
         for road in roads {
-            let start = rotate(WorldProjection.offset(from: origin, to: road.start), by: headingRotation)
-            let end = rotate(WorldProjection.offset(from: origin, to: road.end), by: headingRotation)
+            let start = rotate(WorldProjection.offset(from: origin, to: road.start), by: rotation)
+            let end = rotate(WorldProjection.offset(from: origin, to: road.end), by: rotation)
             let length = hypot(end.dx - start.dx, end.dy - start.dy)
             guard length > 0 else { continue }
 
@@ -285,6 +304,7 @@ struct WorldView: View {
         let building: BuildingShape
         /// Heading-rotated footprint offsets, meters.
         let footprint: [Vector2]
+        let centroid: Vector2
         let distanceFromCamera: Double
         let opacity: Double
         let isPastHorizon: Bool
@@ -292,12 +312,12 @@ struct WorldView: View {
 
     /// Back-to-front (painter's order), so nearer buildings draw over the
     /// ones behind them.
-    private func sortedBuildings(origin: CLLocationCoordinate2D, camera: StreetCamera) -> [PlacedBuilding] {
+    private func sortedBuildings(origin: CLLocationCoordinate2D, rotation: Double, camera: StreetCamera) -> [PlacedBuilding] {
         let fadeStart = renderRadiusMeters * fadeStartFraction
         let fadeLength = max(renderRadiusMeters - fadeStart, 1)
 
         return buildings.compactMap { building -> PlacedBuilding? in
-            let footprint = building.footprint.map { rotate(WorldProjection.offset(from: origin, to: $0), by: headingRotation) }
+            let footprint = building.footprint.map { rotate(WorldProjection.offset(from: origin, to: $0), by: rotation) }
             guard let centroid = centroid(of: footprint) else { return nil }
 
             let distanceFromUser = hypot(centroid.dx, centroid.dy)
@@ -308,6 +328,7 @@ struct WorldView: View {
             return PlacedBuilding(
                 building: building,
                 footprint: footprint,
+                centroid: centroid,
                 distanceFromCamera: (base - camera.position).length,
                 opacity: fade,
                 isPastHorizon: isPastHorizon(base, camera: camera)
@@ -316,18 +337,16 @@ struct WorldView: View {
         .sorted { $0.distanceFromCamera > $1.distanceFromCamera }
     }
 
-    private func draw(_ item: PlacedBuilding, camera: StreetCamera, time: TimeInterval, in context: inout GraphicsContext) {
+    private func draw(
+        _ item: PlacedBuilding,
+        camera: StreetCamera,
+        time: TimeInterval,
+        frame: WorldMotion.Frame,
+        in context: inout GraphicsContext
+    ) {
         let building = item.building
         let opacity = item.opacity
-
-        // Sway leans the whole building sideways from its base, like grass
-        // in wind. Each building's own phase/speed keeps the field out of
-        // lockstep; amplitude comes from `movementState` (still = none,
-        // walking = 1.5°, biking = 3°).
-        let swaySpeed = 0.6 + building.swayPhase * 0.4
-        let swayAmplitudeRadians = movementState.swayAngle * .pi / 180
-        let swayAngle = sin(time * swaySpeed + building.swayPhase * 2 * .pi) * swayAmplitudeRadians
-        let lean = Vector3(x: tan(swayAngle) * building.height, y: 0, z: building.height)
+        let lean = roofLean(for: item, time: time, frame: frame)
 
         let base = item.footprint.map { worldPoint($0) }
         let roof = base.map { $0 + lean }
@@ -403,6 +422,61 @@ struct WorldView: View {
             context.fill(roofPath, with: .color(.white.opacity(0.30 * opacity)))
             context.stroke(roofPath, with: .color(.white.opacity(0.45 * opacity)), lineWidth: 1)
         }
+    }
+
+    /// How far a building's roof is pushed off its base (x, y) on top of
+    /// its height (z) — the whole building shears, like a blade of grass
+    /// bending from the root.
+    ///
+    /// Two parts:
+    /// - **Breeze**: a gentle side-to-side sway, each building on its own
+    ///   phase/speed so the field never moves in lockstep. Amplitude is
+    ///   `breezeScale` of `movementState`'s sway (still = none).
+    /// - **Swoosh**: inertia. As the street moves past the user — from
+    ///   walking along it, or from turning — each building's base moves
+    ///   with it and its top lags behind, so it bends against its own
+    ///   motion. Stronger the faster it's moving and the closer it is.
+    ///   `frame`'s velocity and turn rate are springs, so when motion
+    ///   stops, buildings swing back past upright before settling.
+    private func roofLean(for item: PlacedBuilding, time: TimeInterval, frame: WorldMotion.Frame) -> Vector3 {
+        let building = item.building
+        let swaySpeed = 0.6 + building.swayPhase * 0.4
+        let breezeDegrees = sin(time * swaySpeed + building.swayPhase * 2 * .pi) * movementState.swayAngle * breezeScale
+
+        // How this building's base is moving through the view frame. The
+        // user moving by `velocity` moves the world by `-velocity`; turning
+        // at `turnRate` spins every point around the user, perpendicular
+        // to its offset.
+        let p = item.centroid
+        let fromWalking = Vector2(dx: -frame.velocity.dx, dy: -frame.velocity.dy)
+        let fromTurning = Vector2(dx: -frame.turnRate * p.dy, dy: frame.turnRate * p.dx)
+
+        let distance = hypot(p.dx, p.dy)
+        let falloff = 1 / (1 + pow(distance / swooshFalloffMeters, 2))
+        // Top lags behind the base: lean points opposite its motion.
+        // Turning gets its own, much tighter cap first, so spinning in
+        // place stays a subtle drag rather than the city whipping around.
+        let turning = clamped(
+            Vector2(dx: -fromTurning.dx * turnSwooshDegreesPerMeterPerSecond * falloff,
+                    dy: -fromTurning.dy * turnSwooshDegreesPerMeterPerSecond * falloff),
+            to: maxTurnSwooshDegrees
+        )
+        let swoosh = clamped(
+            Vector2(dx: -fromWalking.dx * swooshDegreesPerMeterPerSecond * falloff + turning.dx,
+                    dy: -fromWalking.dy * swooshDegreesPerMeterPerSecond * falloff + turning.dy),
+            to: maxSwooshDegrees
+        )
+
+        func offset(_ degrees: Double) -> Double {
+            tan(degrees * .pi / 180) * building.height
+        }
+        return Vector3(x: offset(breezeDegrees + swoosh.dx), y: offset(swoosh.dy), z: building.height)
+    }
+
+    private func clamped(_ vector: Vector2, to maxLength: Double) -> Vector2 {
+        let length = hypot(vector.dx, vector.dy)
+        guard length > maxLength else { return vector }
+        return Vector2(dx: vector.dx / length * maxLength, dy: vector.dy / length * maxLength)
     }
 
     /// Fills a grid of window quads across one wall, every corner placed in
@@ -585,6 +659,7 @@ private extension Path {
     WorldView(
         origin: origin,
         heading: nil,
+        velocity: Vector2(dx: 0, dy: 1.4),
         movementState: .walking,
         roads: PlaceholderRoadGenerator.roads(near: origin, radiusMeters: 160),
         buildings: PlaceholderCityGenerator.buildings(near: origin, radiusMeters: 160),

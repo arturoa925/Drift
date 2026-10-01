@@ -51,6 +51,7 @@ struct MapView: View {
             WorldView(
                 origin: streetOrigin,
                 heading: model.heading,
+                velocity: streetVelocity,
                 movementState: model.movementState,
                 roads: roads,
                 buildings: buildings,
@@ -87,6 +88,23 @@ struct MapView: View {
         guard let coordinate = model.currentLocation?.coordinate else { return nil }
         let axis = streetAxis ?? CityGrid.StreetAxis(bearing: model.heading ?? 0)
         return CityGrid.streetCenter(near: coordinate, along: axis)
+    }
+
+    /// The user's velocity, (east, north) m/s, with any sideways component
+    /// dropped — only motion *along* the street they're snapped to, so
+    /// `WorldMotion`'s dead reckoning between fixes slides them down the
+    /// road instead of drifting off it into the buildings.
+    private var streetVelocity: Vector2 {
+        guard let location = model.currentLocation,
+              location.speed >= minimumCourseSpeed,
+              location.heading >= 0 else { return Vector2(dx: 0, dy: 0) }
+        let course = location.heading * .pi / 180
+        let east = location.speed * sin(course)
+        let north = location.speed * cos(course)
+        switch streetAxis ?? CityGrid.StreetAxis(bearing: model.heading ?? 0) {
+        case .northSouth: return Vector2(dx: 0, dy: north)
+        case .eastWest: return Vector2(dx: east, dy: 0)
+        }
     }
 
     /// Below this speed (m/s), GPS course is too noisy to trust — the axis
