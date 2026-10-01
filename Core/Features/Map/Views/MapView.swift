@@ -5,6 +5,7 @@
 //  Created by Arturo Ayala on 5/28/26.
 //
 
+import CoreLocation
 import SwiftUI
 
 /// The map screen's root container — stacks every visual layer per
@@ -28,6 +29,12 @@ import SwiftUI
 /// claude.md originally described has been dropped from scope entirely.
 struct MapView: View {
     @StateObject private var model = MapModel()
+    /// Which placeholder street the user is standing in. Chosen from the
+    /// direction they're *walking* (GPS course), never from which way
+    /// they're facing — so turning on the spot spins the street around
+    /// them instead of hopping them onto a cross street. `nil` until the
+    /// first fix, then seeded from compass heading.
+    @State private var streetAxis: CityGrid.StreetAxis?
 
     /// How far out buildings/roads get generated/rendered — roughly 2.5
     /// `CityGrid` blocks (~65m each) in every direction. Was 220m (~3.4
@@ -42,35 +49,66 @@ struct MapView: View {
         ZStack {
             MapGradientLayer(model: model)
             WorldView(
-                origin: model.currentLocation?.coordinate,
+                origin: streetOrigin,
                 heading: model.heading,
                 movementState: model.movementState,
                 roads: roads,
-                buildings: buildings
+                buildings: buildings,
+                renderRadiusMeters: renderRadiusMeters
             )
-            UserPulseView(
-                weatherCondition: model.weatherCondition,
-                timeOfDayCondition: model.timeOfDayCondition,
-                movementState: model.movementState
-            )
+            // Pinned to wherever `WorldView`'s camera projects the user's
+            // feet — low on screen, not dead center.
+            GeometryReader { proxy in
+                UserPulseView(
+                    weatherCondition: model.weatherCondition,
+                    timeOfDayCondition: model.timeOfDayCondition,
+                    movementState: model.movementState
+                )
+                .position(x: proxy.size.width / 2, y: proxy.size.height * WorldView.userScreenAnchorY)
+            }
         }
         // Full-bleed on purpose: `WorldView`'s Canvas and `UserPulseView`
-        // both center on this ZStack's own bounds, so it needs to span the
-        // entire screen (under the status bar/notch/home indicator too) —
-        // otherwise safe-area insets would shrink its frame and pull the
-        // pulse dot away from the screen's true visual center.
+        // both position against this ZStack's own bounds, so it needs to
+        // span the entire screen (under the status bar/notch/home indicator
+        // too) — otherwise safe-area insets would shrink its frame and pull
+        // the pulse dot off the user's projected position.
         .ignoresSafeArea()
+        .onChange(of: model.currentLocation, initial: true) { _, location in
+            updateStreetAxis(for: location)
+        }
         .onAppear { model.start() }
         .onDisappear { model.stop() }
     }
 
+    /// The user's location slid onto the middle of the nearest placeholder
+    /// street along `streetAxis`, so the camera always stands in the road —
+    /// see `CityGrid.streetCenter(near:along:)`.
+    private var streetOrigin: CLLocationCoordinate2D? {
+        guard let coordinate = model.currentLocation?.coordinate else { return nil }
+        let axis = streetAxis ?? CityGrid.StreetAxis(bearing: model.heading ?? 0)
+        return CityGrid.streetCenter(near: coordinate, along: axis)
+    }
+
+    /// Below this speed (m/s), GPS course is too noisy to trust — the axis
+    /// just stays whatever it already was.
+    private let minimumCourseSpeed: Double = 0.7
+
+    private func updateStreetAxis(for location: DeviceLocation?) {
+        guard let location else { return }
+        if location.speed >= minimumCourseSpeed, location.heading >= 0 {
+            streetAxis = CityGrid.StreetAxis(bearing: location.heading)
+        } else if streetAxis == nil {
+            streetAxis = CityGrid.StreetAxis(bearing: model.heading ?? 0)
+        }
+    }
+
     private var roads: [RoadSegment] {
-        guard let origin = model.currentLocation?.coordinate else { return [] }
+        guard let origin = streetOrigin else { return [] }
         return PlaceholderRoadGenerator.roads(near: origin, radiusMeters: renderRadiusMeters)
     }
 
     private var buildings: [BuildingShape] {
-        guard let origin = model.currentLocation?.coordinate else { return [] }
+        guard let origin = streetOrigin else { return [] }
         return PlaceholderCityGenerator.buildings(near: origin, radiusMeters: renderRadiusMeters)
     }
 }

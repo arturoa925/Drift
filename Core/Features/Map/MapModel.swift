@@ -184,8 +184,12 @@ final class MapModel: ObservableObject {
     /// conditions don't shift minute to minute the way sun position does.
     private func startWeatherClock() {
         weatherTimer = Timer.scheduledTimer(withTimeInterval: 15 * 60, repeats: true) { [weak self] _ in
-            guard let self, let location = self.currentLocation else { return }
+            guard let self else { return }
+            // Read inside the main-actor task, not the timer callback —
+            // `currentLocation` is main-actor isolated, and the timer's
+            // closure is `@Sendable`.
             Task { @MainActor in
+                guard let location = self.currentLocation else { return }
                 await self.weatherService.refresh(for: location)
             }
         }

@@ -32,4 +32,38 @@ enum CityGrid {
     static func cellSpan(forRadiusMeters radiusMeters: Double) -> Int {
         Int(ceil(radiusMeters / (cellSizeDegrees * WorldProjection.metersPerDegreeLatitude))) + 1
     }
+
+    /// Which way a placeholder street runs.
+    enum StreetAxis {
+        case northSouth
+        case eastWest
+
+        /// The axis closest to a compass bearing (0–360°, 0 = north).
+        init(bearing: Double) {
+            let axisBearing = bearing.truncatingRemainder(dividingBy: 180)
+            let normalized = axisBearing < 0 ? axisBearing + 180 : axisBearing
+            self = normalized < 45 || normalized >= 135 ? .northSouth : .eastWest
+        }
+    }
+
+    /// Slides `coordinate` sideways onto the center line of the nearest
+    /// grid street running along `axis`. Its position *along* that street
+    /// is left untouched.
+    ///
+    /// This keeps `WorldView`'s street-level camera standing in the middle
+    /// of a road with buildings on either side, rather than wherever raw
+    /// GPS lands inside a placeholder block. It only makes sense while the
+    /// streets are this made-up grid; real road data would snap to the
+    /// nearest real street instead.
+    static func streetCenter(near coordinate: CLLocationCoordinate2D, along axis: StreetAxis) -> CLLocationCoordinate2D {
+        func snapped(_ degrees: Double) -> Double {
+            (degrees / cellSizeDegrees).rounded() * cellSizeDegrees
+        }
+        switch axis {
+        case .northSouth:
+            return CLLocationCoordinate2D(latitude: coordinate.latitude, longitude: snapped(coordinate.longitude))
+        case .eastWest:
+            return CLLocationCoordinate2D(latitude: snapped(coordinate.latitude), longitude: coordinate.longitude)
+        }
+    }
 }
