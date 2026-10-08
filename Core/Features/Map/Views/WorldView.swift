@@ -60,16 +60,51 @@ struct WorldView: View {
     /// keeps perspective division away from zero.
     private let nearPlaneMeters: Double = 0.5
     /// Radius of the little planet the user walks on. Smaller = more
-    /// dramatic curve, and a closer horizon.
-    private let planetRadiusMeters: Double = 170
+    /// dramatic curve, and a closer horizon — but the horizon distance from
+    /// a camera at `cameraHeightMeters` grows only with `sqrt(radius)`,
+    /// while how tall a building needs to be to peek back up over it past
+    /// that point grows roughly with the *square* of how far past the
+    /// horizon it sits. At the old 170m, the horizon was only ~39m out —
+    /// fine for SF's tall, tightly-packed blocks (where plenty of
+    /// buildings are within that, and the few beyond it were often tall
+    /// enough to peek anyway), but it meant real 9-14m suburban houses
+    /// 100m+ away (ordinary spacing outside a dense city) were
+    /// geometrically invisible no matter how generous the fade radius was.
+    /// 1,200m puts the horizon at ~104m — still a deliberately stylized,
+    /// visibly curved little world, but one where ordinary nearby homes
+    /// actually clear the curve.
+    private let planetRadiusMeters: Double = 1200
     /// Buildings start fading at this fraction of `renderRadiusMeters` and
     /// are fully gone at the radius itself.
     private let fadeStartFraction: Double = 0.6
 
-    /// Real road width (meters) — two 3.5m lanes, curb to curb. The
-    /// placeholder grid keeps every building at least ~7m from a street's
-    /// center line, so this leaves a sidewalk of 3.5m or more on each side.
-    private let roadWidthMeters: Double = 7
+    /// Real road width (meters), by `RoadClass` — a dense grid (e.g. a city
+    /// like SF) reads as an undifferentiated tangle when every street is
+    /// drawn the same width; a `major` arterial several lanes wide should
+    /// visibly dominate over a `minor` service alley/footway. Residential
+    /// stays at the original flat 7m (two 3.5m lanes, curb to curb) that
+    /// the placeholder grid's building clearance was tuned around.
+    private func roadWidthMeters(for roadClass: RoadClass) -> Double {
+        switch roadClass {
+        case .major: return 12
+        case .secondary: return 9.5
+        case .residential: return 7
+        case .minor: return 4
+        }
+    }
+
+    /// Fill opacity by `RoadClass` — major arterials read brighter/more
+    /// solid, minor alleys/footways fade toward the background, so the eye
+    /// can sort a dense grid by importance at a glance instead of every
+    /// line looking equally present.
+    private func roadOpacity(for roadClass: RoadClass) -> Double {
+        switch roadClass {
+        case .major: return 0.42
+        case .secondary: return 0.34
+        case .residential: return 0.26
+        case .minor: return 0.16
+        }
+    }
     /// Dashed center line, real meters — the one road marking that gives
     /// the eye a true sense of scale at street level.
     private let centerDashLengthMeters: Double = 3
@@ -78,6 +113,13 @@ struct WorldView: View {
     /// own height on the curved ground, so this is what keeps a long street
     /// following the planet's curve instead of cutting straight through it.
     private let roadSampleMeters: Double = 6
+
+    /// How many of the nearest named streets get a label at once — caps
+    /// clutter in a dense area with many short, separately-fetched segments
+    /// sharing different names.
+    private let maxStreetLabels = 6
+    /// How high above the street a name label floats, meters.
+    private let streetLabelHeightMeters: Double = 2.5
 
     /// Real-world floor height — one window row per story.
     private let floorHeightMeters: Double = 3.5
@@ -141,6 +183,12 @@ struct WorldView: View {
                         draw(item, camera: camera, time: time, frame: frame, in: &context)
                     }
                 }
+
+                // Labels always draw last, on top of buildings — drawing
+                // them earlier would risk a building's destination-out
+                // occlusion knockout (see `draw`) erasing a label that
+                // happens to fall inside its silhouette.
+                drawStreetLabels(origin: frame.origin, rotation: frame.rotation, camera: camera, in: &context)
             }
         }
     }
@@ -235,11 +283,13 @@ struct WorldView: View {
     /// (sin θ, cos θ) in (east, north), and rotating it CCW by θ lands it
     /// on (0, 1).
     private func drawRoads(origin: CLLocationCoordinate2D, rotation: Double, camera: StreetCamera, in context: inout GraphicsContext) {
-        // One path per orientation, filled once — overlapping quads (at
+        // One path per `RoadClass`, filled once — overlapping quads (at
         // intersections, and where a road's own segments meet) then fill
-        // as a single shape instead of stacking their opacity.
-        var horizontal = Path()
-        var vertical = Path()
+        // as a single shape instead of stacking their opacity. Bucketing
+        // by class instead of literal compass orientation is what lets a
+        // dense grid (e.g. SF) read as "big through-street vs. small
+        // alley" instead of every line looking the same weight.
+        var pathsByClass: [RoadClass: Path] = [:]
         var centerDashes = Path()
 
         for road in roads {
@@ -260,7 +310,7 @@ struct WorldView: View {
                     dy: start.dy + (end.dy - start.dy) * t + across.dy * offset
                 )
             }
-            let halfWidth = roadWidthMeters / 2
+            let halfWidth = roadWidthMeters(for: road.roadClass) / 2
             let halfDash = centerDashWidthMeters / 2
             let dashFraction = min(centerDashLengthMeters / (length / Double(steps)), 1)
 
@@ -272,15 +322,14 @@ struct WorldView: View {
 
                 let quad = [along(t0, -halfWidth), along(t1, -halfWidth), along(t1, halfWidth), along(t0, halfWidth)]
                 guard let screen = camera.projectPolygon(quad.map { worldPoint($0) }) else { continue }
-                let polygon = Path.polygon(screen)
-                if road.orientation == .horizontal {
-                    horizontal.addPath(polygon)
-                } else {
-                    vertical.addPath(polygon)
-                }
+                pathsByClass[road.roadClass, default: Path()].addPath(Path.polygon(screen))
 
                 // One dash at the start of each sample, so dash spacing is
-                // exactly `roadSampleMeters`.
+                // exactly `roadSampleMeters`. Skipped for `.minor` roads
+                // (alleys, footways, driveways) — real ones don't carry a
+                // painted lane line, and leaving it off helps them read as
+                // visibly smaller/lesser than a real street.
+                guard road.roadClass != .minor else { continue }
                 let dashEnd = t0 + (t1 - t0) * dashFraction
                 let dash = [along(t0, -halfDash), along(dashEnd, -halfDash), along(dashEnd, halfDash), along(t0, halfDash)]
                 if let dashScreen = camera.projectPolygon(dash.map { worldPoint($0, height: 0.02) }) {
@@ -293,9 +342,56 @@ struct WorldView: View {
         // level than they did from overhead, so these sit back closer to
         // claude.md's "whisper" opacities than the old 0.42/0.34 strokes.
         let color = Color(hex: "B4B4BE")
-        context.fill(horizontal, with: .color(color.opacity(0.30)))
-        context.fill(vertical, with: .color(color.opacity(0.24)))
+        for (roadClass, path) in pathsByClass {
+            context.fill(path, with: .color(color.opacity(roadOpacity(for: roadClass))))
+        }
         context.fill(centerDashes, with: .color(.white.opacity(0.45)))
+    }
+
+    /// One floating label per nearby named street, placed at whichever of
+    /// its segments is closest to the user — so a long street broken into
+    /// many fetched segments still only gets one label, positioned where
+    /// it's actually nearest. Capped to `maxStreetLabels`, nearest first.
+    private func drawStreetLabels(origin: CLLocationCoordinate2D, rotation: Double, camera: StreetCamera, in context: inout GraphicsContext) {
+        struct Anchor {
+            let name: String
+            let midpoint: Vector2
+            let distance: Double
+        }
+
+        var nearestByName: [String: Anchor] = [:]
+        for road in roads {
+            guard let name = road.name, !name.isEmpty else { continue }
+            let start = rotate(WorldProjection.offset(from: origin, to: road.start), by: rotation)
+            let end = rotate(WorldProjection.offset(from: origin, to: road.end), by: rotation)
+            let midpoint = Vector2(dx: (start.dx + end.dx) / 2, dy: (start.dy + end.dy) / 2)
+            let distance = hypot(midpoint.dx, midpoint.dy)
+            if let existing = nearestByName[name], existing.distance <= distance { continue }
+            nearestByName[name] = Anchor(name: name, midpoint: midpoint, distance: distance)
+        }
+
+        let fadeStart = renderRadiusMeters * fadeStartFraction
+        let fadeLength = max(renderRadiusMeters - fadeStart, 1)
+        let anchors = nearestByName.values.sorted { $0.distance < $1.distance }.prefix(maxStreetLabels)
+
+        for anchor in anchors {
+            let base = worldPoint(anchor.midpoint, height: streetLabelHeightMeters)
+            guard !isPastHorizon(base, camera: camera) else { continue }
+            let local = camera.toCamera(base)
+            guard local.z > camera.nearPlane else { continue }
+
+            let fade = 1 - min(max((anchor.distance - fadeStart) / fadeLength, 0), 1)
+            guard fade > 0 else { continue }
+
+            let point = camera.project(local)
+            let text = Text(anchor.name)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.85 * fade))
+            context.drawLayer { layer in
+                layer.addFilter(.shadow(color: .black.opacity(0.35 * fade), radius: 2, y: 0.5))
+                layer.draw(text, at: point)
+            }
+        }
     }
 
     // MARK: - Buildings
@@ -316,7 +412,7 @@ struct WorldView: View {
         let fadeStart = renderRadiusMeters * fadeStartFraction
         let fadeLength = max(renderRadiusMeters - fadeStart, 1)
 
-        return buildings.compactMap { building -> PlacedBuilding? in
+        let result = buildings.compactMap { building -> PlacedBuilding? in
             let footprint = building.footprint.map { rotate(WorldProjection.offset(from: origin, to: $0), by: rotation) }
             guard let centroid = centroid(of: footprint) else { return nil }
 
@@ -335,6 +431,8 @@ struct WorldView: View {
             )
         }
         .sorted { $0.distanceFromCamera > $1.distanceFromCamera }
+
+        return result
     }
 
     private func draw(
@@ -399,11 +497,16 @@ struct WorldView: View {
         knockout.blendMode = .destinationOut
         knockout.fill(silhouette, with: .color(.black.opacity(opacity)))
 
+        let tint = categoryTint(building.category)
+
         for wall in walls {
             // Walls read as "in shadow" relative to the roof — a flat,
-            // cheap stand-in for real per-face lighting.
-            context.fill(wall.path, with: .color(.white.opacity(0.14 * opacity)))
-            context.stroke(wall.path, with: .color(.white.opacity(0.24 * opacity)), lineWidth: 1)
+            // cheap stand-in for real per-face lighting. Tinted (faintly)
+            // by `building.category` so homes vs. businesses vs. everything
+            // else are tellable apart at a glance, without getting anywhere
+            // near bold enough to read as a "colored building."
+            context.fill(wall.path, with: .color(tint.opacity(0.14 * opacity)))
+            context.stroke(wall.path, with: .color(tint.opacity(0.24 * opacity)), lineWidth: 1)
 
             drawWindows(
                 on: wall.corners,
@@ -419,8 +522,23 @@ struct WorldView: View {
         }
 
         if let roofPath {
-            context.fill(roofPath, with: .color(.white.opacity(0.30 * opacity)))
-            context.stroke(roofPath, with: .color(.white.opacity(0.45 * opacity)), lineWidth: 1)
+            context.fill(roofPath, with: .color(tint.opacity(0.30 * opacity)))
+            context.stroke(roofPath, with: .color(tint.opacity(0.45 * opacity)), lineWidth: 1)
+        }
+    }
+
+    /// Residential stays plain white — the look everything already had —
+    /// so homes (by far the most common category) don't visually change.
+    /// Commercial picks up the same warm tone `drawWindows` already uses
+    /// for a lit window, so a storefront reads as "the lively one."
+    /// `.other` (civic/unclassified) gets a cool, neutral tint distinct
+    /// from both. All three stay within the walls/roofs' existing
+    /// opacity range — only the hue changes, never how solid anything looks.
+    private func categoryTint(_ category: BuildingCategory) -> Color {
+        switch category {
+        case .residential: return .white
+        case .commercial: return Color(hex: "FDE68A")
+        case .other: return Color(hex: "BAE6FD")
         }
     }
 
@@ -655,7 +773,7 @@ private extension Path {
 }
 
 #Preview {
-    let origin = CityGrid.streetCenter(near: CLLocationCoordinate2D(latitude: 37.7749, longitude: -122.4194), along: .northSouth)
+    let origin = CLLocationCoordinate2D(latitude: 37.7749, longitude: -122.4194)
     WorldView(
         origin: origin,
         heading: nil,

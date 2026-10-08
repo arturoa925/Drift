@@ -48,7 +48,7 @@ enum PlaceholderRoadGenerator {
                 origin: origin,
                 radiusMeters: radiusMeters
             ) {
-                roads.append(RoadSegment(id: "h_\(latIndex)", start: clipped.start, end: clipped.end, orientation: .horizontal))
+                roads.append(RoadSegment(id: "h_\(latIndex)", start: clipped.start, end: clipped.end, name: nil))
             }
         }
 
@@ -62,7 +62,7 @@ enum PlaceholderRoadGenerator {
                 origin: origin,
                 radiusMeters: radiusMeters
             ) {
-                roads.append(RoadSegment(id: "v_\(lngIndex)", start: clipped.start, end: clipped.end, orientation: .vertical))
+                roads.append(RoadSegment(id: "v_\(lngIndex)", start: clipped.start, end: clipped.end, name: nil))
             }
         }
 

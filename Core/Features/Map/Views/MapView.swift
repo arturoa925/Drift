@@ -20,29 +20,34 @@ import SwiftUI
 /// MapKit may come back later purely as a utility (e.g. `MKLocalSearch` for
 /// place lookup), but never again as what's actually rendered on screen.
 ///
-/// Roads and buildings are still `PlaceholderRoadGenerator`/
-/// `PlaceholderCityGenerator` output, not real geometry — proving out this
-/// renderer's sway/scale/rotation feel first, then swapping in real data
-/// (OpenStreetMap/Overpass, most likely) is a deliberate, separate next
-/// step. `MapOverlayView` (now superseded by `WorldView`), `TrailOverlay`,
-/// and the floating pill controls are all still unbuilt; the heatmap layer
+/// Roads come from `RoadNetworkService` and buildings from
+/// `BuildingNetworkService` — both real OpenStreetMap geometry fetched via
+/// Overpass, so a building's footprint actually lines up with where the
+/// street it's next to really runs, rather than `PlaceholderCityGenerator`'s
+/// made-up grid landing buildings in the middle of the road.
+/// `MapOverlayView` (now superseded by `WorldView`), `TrailOverlay`, and the
+/// floating pill controls are all still unbuilt; the heatmap layer
 /// claude.md originally described has been dropped from scope entirely.
 struct MapView: View {
     @StateObject private var model = MapModel()
-    /// Which placeholder street the user is standing in. Chosen from the
-    /// direction they're *walking* (GPS course), never from which way
-    /// they're facing — so turning on the spot spins the street around
-    /// them instead of hopping them onto a cross street. `nil` until the
-    /// first fix, then seeded from compass heading.
-    @State private var streetAxis: CityGrid.StreetAxis?
+    /// Real road geometry + names, fetched from OpenStreetMap — replaces
+    /// `PlaceholderRoadGenerator` as the live source `roads` draws from.
+    @StateObject private var roadNetwork = RoadNetworkService()
+    /// Real building footprints + use tags, fetched from OpenStreetMap —
+    /// replaces `PlaceholderCityGenerator` as the live source `buildings`
+    /// draws from.
+    @StateObject private var buildingNetwork = BuildingNetworkService()
 
-    /// How far out buildings/roads get generated/rendered — roughly 2.5
-    /// `CityGrid` blocks (~65m each) in every direction. Was 220m (~3.4
-    /// blocks); pulled in further so the world reads as "what's actually
-    /// nearby" rather than the full render radius the curved/scaled
-    /// perspective can otherwise make visible all at once.
+    /// How far out buildings/roads get generated/rendered. `WorldView`'s
+    /// planet radius sets the real ceiling here — at 1,200m, the geometric
+    /// horizon from the camera's height is ~104m, and an ordinary building
+    /// needs a lot of extra distance past that before it's tall enough to
+    /// peek back up over the curve. 3 `CityGrid` blocks (~200m) covers that
+    /// horizon with some margin for taller buildings that do clear it a
+    /// little further out, without fetching/fading a radius most of which
+    /// could never be visible anyway.
     private var renderRadiusMeters: Double {
-        CityGrid.cellSizeDegrees * WorldProjection.metersPerDegreeLatitude * 2.5
+        CityGrid.cellSizeDegrees * WorldProjection.metersPerDegreeLatitude * 3.0
     }
 
     var body: some View {
@@ -75,25 +80,45 @@ struct MapView: View {
         // the pulse dot off the user's projected position.
         .ignoresSafeArea()
         .onChange(of: model.currentLocation, initial: true) { _, location in
-            updateStreetAxis(for: location)
+            guard let location else { return }
+            Task {
+                await roadNetwork.refresh(near: location.coordinate, radiusMeters: renderRadiusMeters)
+            }
+            Task {
+                await buildingNetwork.refresh(near: location.coordinate, radiusMeters: renderRadiusMeters)
+            }
         }
         .onAppear { model.start() }
         .onDisappear { model.stop() }
     }
 
-    /// The user's location slid onto the middle of the nearest placeholder
-    /// street along `streetAxis`, so the camera always stands in the road —
-    /// see `CityGrid.streetCenter(near:along:)`.
-    private var streetOrigin: CLLocationCoordinate2D? {
+    /// Closest point on the closest real road to the user, plus that road's
+    /// own direction — `nil` before the first successful fetch, or when
+    /// nothing real is close enough (e.g. no network yet, or genuinely off
+    /// any mapped street) to snap to.
+    private var nearestRoadSnap: (point: CLLocationCoordinate2D, direction: Vector2)? {
         guard let coordinate = model.currentLocation?.coordinate else { return nil }
-        let axis = streetAxis ?? CityGrid.StreetAxis(bearing: model.heading ?? 0)
-        return CityGrid.streetCenter(near: coordinate, along: axis)
+        // 25m, not 15 — plain GPS (no Wi-Fi/cell assist, e.g. indoors) can
+        // easily drift that far from the actual street, and snapping is
+        // meant to correct exactly that kind of drift, not just the last
+        // few meters of normal fix noise.
+        return RoadNetworkService.nearestPoint(to: coordinate, in: roads, maxDistanceMeters: 25)
     }
 
-    /// The user's velocity, (east, north) m/s, with any sideways component
-    /// dropped — only motion *along* the street they're snapped to, so
+    /// The user's location, slid onto the nearest real street when one's
+    /// close enough to snap to, so the camera stands in the road rather
+    /// than wherever raw GPS happens to land — falls back to the raw fix
+    /// when there's nothing nearby to snap to yet.
+    private var streetOrigin: CLLocationCoordinate2D? {
+        guard let coordinate = model.currentLocation?.coordinate else { return nil }
+        return nearestRoadSnap?.point ?? coordinate
+    }
+
+    /// The user's velocity, (east, north) m/s, projected onto the nearest
+    /// street's own direction (whatever angle it actually runs at) so
     /// `WorldMotion`'s dead reckoning between fixes slides them down the
-    /// road instead of drifting off it into the buildings.
+    /// road instead of drifting off it into the buildings. Passed through
+    /// unprojected when there's no nearby street to project onto yet.
     private var streetVelocity: Vector2 {
         guard let location = model.currentLocation,
               location.speed >= minimumCourseSpeed,
@@ -101,33 +126,20 @@ struct MapView: View {
         let course = location.heading * .pi / 180
         let east = location.speed * sin(course)
         let north = location.speed * cos(course)
-        switch streetAxis ?? CityGrid.StreetAxis(bearing: model.heading ?? 0) {
-        case .northSouth: return Vector2(dx: 0, dy: north)
-        case .eastWest: return Vector2(dx: east, dy: 0)
-        }
+        guard let direction = nearestRoadSnap?.direction else { return Vector2(dx: east, dy: north) }
+        let along = east * direction.dx + north * direction.dy
+        return Vector2(dx: direction.dx * along, dy: direction.dy * along)
     }
 
-    /// Below this speed (m/s), GPS course is too noisy to trust — the axis
-    /// just stays whatever it already was.
+    /// Below this speed (m/s), GPS course is too noisy to trust.
     private let minimumCourseSpeed: Double = 0.7
 
-    private func updateStreetAxis(for location: DeviceLocation?) {
-        guard let location else { return }
-        if location.speed >= minimumCourseSpeed, location.heading >= 0 {
-            streetAxis = CityGrid.StreetAxis(bearing: location.heading)
-        } else if streetAxis == nil {
-            streetAxis = CityGrid.StreetAxis(bearing: model.heading ?? 0)
-        }
-    }
-
     private var roads: [RoadSegment] {
-        guard let origin = streetOrigin else { return [] }
-        return PlaceholderRoadGenerator.roads(near: origin, radiusMeters: renderRadiusMeters)
+        roadNetwork.roads
     }
 
     private var buildings: [BuildingShape] {
-        guard let origin = streetOrigin else { return [] }
-        return PlaceholderCityGenerator.buildings(near: origin, radiusMeters: renderRadiusMeters)
+        buildingNetwork.buildings
     }
 }
 

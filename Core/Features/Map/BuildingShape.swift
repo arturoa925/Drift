@@ -8,6 +8,21 @@
 import CoreLocation
 import Foundation
 
+/// What a building is actually used for, as far as OSM's tagging says —
+/// lets `WorldView` read as "homes vs. businesses vs. everything else"
+/// instead of an undifferentiated field of identical blocks.
+enum BuildingCategory {
+    /// Houses, apartments, residential blocks — `building=house`,
+    /// `=residential`, `=apartments`, `=detached`, etc.
+    case residential
+    /// Anything with a `shop`, `office`, or business-flavored `amenity`/
+    /// `building` tag — shops, restaurants, offices, retail.
+    case commercial
+    /// Schools, hospitals, warehouses, or a bare `building=yes` with
+    /// nothing else to go on.
+    case other
+}
+
 /// A single building's real-world footprint. For now every instance comes
 /// from `PlaceholderCityGenerator` — `footprint` is a made-up polygon, not
 /// an actual building outline — but it's structured exactly like real
@@ -33,4 +48,9 @@ struct BuildingShape: Identifiable {
     /// animation phase and speed so a field of them sways like grass,
     /// rather than in lockstep.
     let swayPhase: Double
+
+    /// `.other` for `PlaceholderCityGenerator` output, which has no tags to
+    /// classify from. Real, `BuildingNetworkService`-sourced buildings get
+    /// this from OSM's `building`/`shop`/`amenity`/`office` tags.
+    var category: BuildingCategory = .other
 }

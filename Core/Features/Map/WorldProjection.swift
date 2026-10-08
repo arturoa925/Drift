@@ -27,7 +27,7 @@ struct Vector2 {
 /// currently is, recomputed fresh each time `origin` changes — there's no
 /// camera to pan, because there's no fixed frame for a camera to pan
 /// across.
-enum WorldProjection {
+nonisolated enum WorldProjection {
     /// Meters per degree of latitude — constant everywhere, since lines of
     /// latitude are evenly spaced parallel circles from equator to pole.
     /// Longitude isn't this simple (see `offset`/`coordinate` below), which
