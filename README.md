@@ -4,6 +4,8 @@
 
 Drift is an iOS map app that treats the map as something alive rather than a utility. Instead of a flat, static map, it shows the world from street level over a full-screen atmospheric gradient that shifts with the **time of day**, the **weather**, and your **movement**. Real streets and buildings from OpenStreetMap are drawn as soft, low-opacity shapes, so the gradient does most of the emotional work.
 
+**Case study:** [How Drift is designed and built](https://arturoa925.github.io/projects/drift/) on my portfolio, covering the architecture, code decisions and trade-offs.
+
 It's built to feel like the opposite of Google Maps: motion without urgency and no pressure to get anywhere.
 
 > 🤖 **My first project built entirely by prompting AI.** See [Built with AI](#built-with-ai) below.
