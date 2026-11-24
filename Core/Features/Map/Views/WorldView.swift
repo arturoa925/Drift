@@ -40,6 +40,14 @@ struct WorldView: View {
     /// How far out `roads`/`buildings` were generated — buildings fade out
     /// approaching it so the edge of the generated area never pops.
     let renderRadiusMeters: Double
+    /// Drive the sim lighting (sun position, shadows, window glow). The sky
+    /// gradient itself comes from `ThemeEngine`, not from these.
+    var timeOfDay: TimeOfDayCondition = .midday
+    var weather: WeatherCondition = .sunny
+
+    private var lighting: SimLighting {
+        SimLighting(timeOfDay: timeOfDay, weather: weather)
+    }
 
     /// Fraction of screen height (from the top) where the user's own ground
     /// position lands. Shared with `MapView` so `UserPulseView` sits exactly
@@ -48,14 +56,17 @@ struct WorldView: View {
     static let userScreenAnchorY: CGFloat = 0.7
 
     /// How far behind the user the camera floats, in meters.
-    private let cameraBackMeters: Double = 9
+    private let cameraBackMeters: Double = WorldView.cameraBack
+    static let cameraBack: Double = 9
     /// How far above the ground the camera floats, in meters — a little
     /// over head height, so the user reads as standing *in* the street
     /// rather than being looked down on from a balcony.
-    private let cameraHeightMeters: Double = 4.5
+    private let cameraHeightMeters: Double = WorldView.cameraHeight
+    static let cameraHeight: Double = 4.5
     /// Horizontal field of view across the screen's width. Wide enough that
     /// buildings right beside the user still make it on screen in portrait.
-    private let horizontalFieldOfViewDegrees: Double = 78
+    private let horizontalFieldOfViewDegrees: Double = WorldView.fieldOfView
+    static let fieldOfView: Double = 78
     /// Geometry closer to the camera than this (in depth) is clipped away —
     /// keeps perspective division away from zero.
     private let nearPlaneMeters: Double = 0.5
@@ -73,7 +84,20 @@ struct WorldView: View {
     /// 1,200m puts the horizon at ~104m — still a deliberately stylized,
     /// visibly curved little world, but one where ordinary nearby homes
     /// actually clear the curve.
-    private let planetRadiusMeters: Double = 1200
+    private let planetRadiusMeters: Double = WorldView.planetRadius
+    static let planetRadius: Double = 1200
+
+    /// Where the horizon line lands on screen, as a fraction of height from
+    /// the top — lets the backdrop put its sky/ground split exactly where
+    /// the renderer's own curved horizon is.
+    static func horizonFraction(width: CGFloat, height: CGFloat) -> CGFloat {
+        guard width > 0, height > 0 else { return 0.55 }
+        let pitch = atan2(cameraHeight, cameraBack)
+        let dip = acos(planetRadius / (planetRadius + cameraHeight))
+        let focal = Double(width) / 2 / tan(fieldOfView * .pi / 360)
+        let y = Double(height) * Double(userScreenAnchorY) - focal * tan(pitch - dip)
+        return CGFloat(min(max(y / Double(height), 0.2), 0.8))
+    }
     /// Buildings start fading at this fraction of `renderRadiusMeters` and
     /// are fully gone at the radius itself.
     private let fadeStartFraction: Double = 0.6
@@ -175,10 +199,23 @@ struct WorldView: View {
                 // level, buildings stand on top of them.
                 drawRoads(origin: frame.origin, rotation: frame.rotation, camera: camera, in: &context)
                 drawPathRibbon(camera: camera, in: &context)
+
+                let placed = sortedBuildings(origin: frame.origin, rotation: frame.rotation, camera: camera)
+                drawShadows(placed, rotation: frame.rotation, camera: camera, in: &context)
                 fadeGroundIntoDistance(camera: camera, in: &context)
 
+                // Trees share the buildings' back-to-front order, so a
+                // trunk in front of a facade covers it and one behind it
+                // gets occluded.
+                let trees = placedTrees(origin: frame.origin, rotation: frame.rotation, camera: camera)
+                var nextTree = 0
+
                 let skyClip = skyRegion(camera: camera, size: size)
-                for item in sortedBuildings(origin: frame.origin, rotation: frame.rotation, camera: camera) {
+                for item in placed {
+                    while nextTree < trees.count, trees[nextTree].distanceFromCamera >= item.distanceFromCamera {
+                        drawTree(trees[nextTree], rotation: frame.rotation, camera: camera, in: &context)
+                        nextTree += 1
+                    }
                     if item.isPastHorizon, let skyClip {
                         // Past the horizon, the planet itself hides the
                         // building's lower part — only what pokes up into
@@ -192,6 +229,10 @@ struct WorldView: View {
                     } else {
                         draw(item, camera: camera, time: time, frame: frame, in: &context)
                     }
+                }
+                while nextTree < trees.count {
+                    drawTree(trees[nextTree], rotation: frame.rotation, camera: camera, in: &context)
+                    nextTree += 1
                 }
 
                 // Labels always draw last, on top of buildings — drawing
@@ -451,17 +492,20 @@ struct WorldView: View {
 
         // Layered back to front: sidewalks, then asphalt minor → major (so
         // the bigger road wins at junctions), then paint.
-        context.stroke(sidewalks, with: .color(TeslaStyle.laneLine.opacity(0.10)), lineWidth: 1)
-        context.fill(sidewalks, with: .color(TeslaStyle.sidewalk))
+        let light = lighting
+        context.stroke(sidewalks, with: .color(.black.opacity(0.22)), lineWidth: 1)
+        context.fill(sidewalks, with: .color(light.color("9A9CA2", brightness: light.groundBrightness)))
 
         let drawOrder: [RoadClass] = [.minor, .residential, .secondary, .major]
         for roadClass in drawOrder {
             guard let path = asphaltByClass[roadClass] else { continue }
             // Stroked before filled, so only the outer edge survives —
             // internal seams between sample quads are covered by the fill.
-            let edgeOpacity: Double = roadClass == .minor ? 0.10 : (roadClass == .major ? 0.30 : 0.22)
-            context.stroke(path, with: .color(TeslaStyle.laneLine.opacity(edgeOpacity)), lineWidth: 1.4)
-            context.fill(path, with: .color(TeslaStyle.asphalt.opacity(roadOpacity(for: roadClass))))
+            context.stroke(path, with: .color(.black.opacity(0.25)), lineWidth: 1.2)
+            context.fill(
+                path,
+                with: .color(light.color("52565D", brightness: light.groundBrightness).opacity(roadOpacity(for: roadClass)))
+            )
         }
         context.fill(edgeLines, with: .color(TeslaStyle.laneLine.opacity(0.55)))
         context.fill(dashes, with: .color(TeslaStyle.laneLine.opacity(0.78)))
@@ -550,6 +594,177 @@ struct WorldView: View {
                 layer.draw(text, at: point)
             }
         }
+    }
+
+    // MARK: - Shadows
+
+    /// Soft ground shadows thrown away from the sun, one extruded quad per
+    /// wall. Drawn onto the ground before buildings so they sit under
+    /// everything, and before the distance fade so far shadows dissolve
+    /// with the road they fall on.
+    private func drawShadows(_ placed: [PlacedBuilding], rotation: Double, camera: StreetCamera, in context: inout GraphicsContext) {
+        let light = lighting
+        guard light.shadowRatio > 0, light.shadowOpacity > 0 else { return }
+        let sun = rotate(light.sunDirection, by: rotation)
+
+        for item in placed where !item.isPastHorizon {
+            let length = min(item.building.height * light.shadowRatio, 14)
+            let offset = Vector2(dx: -sun.dx * length, dy: -sun.dy * length)
+            let points = item.footprint
+            var path = Path()
+            for index in 0..<points.count {
+                let a = points[index]
+                let b = points[(index + 1) % points.count]
+                let quad = [
+                    a,
+                    b,
+                    Vector2(dx: b.dx + offset.dx, dy: b.dy + offset.dy),
+                    Vector2(dx: a.dx + offset.dx, dy: a.dy + offset.dy),
+                ]
+                guard var screen = camera.projectPolygon(quad.map { worldPoint($0, height: 0.03) }) else { continue }
+                // Quads from opposite sides of the building wind opposite
+                // ways; one path fills with nonzero winding, so mixed
+                // windings would cancel where they overlap. Normalize.
+                var area: CGFloat = 0
+                for i in 0..<screen.count {
+                    let p = screen[i]
+                    let q = screen[(i + 1) % screen.count]
+                    area += p.x * q.y - q.x * p.y
+                }
+                if area < 0 { screen.reverse() }
+                path.addPath(Path.polygon(screen))
+            }
+            context.fill(path, with: .color(.black.opacity(light.shadowOpacity * item.opacity)))
+        }
+    }
+
+    // MARK: - Trees
+
+    private struct PlacedTree {
+        let position: Vector2
+        let height: Double
+        let radius: Double
+        let distanceFromCamera: Double
+        let opacity: Double
+    }
+
+    /// Street trees along residential and secondary roads, on the sidewalk
+    /// side, placed deterministically (hashed from the road's id) so they
+    /// never shuffle between frames. Only those within `treeRangeMeters` of
+    /// the user are generated.
+    private let treeRangeMeters: Double = 75
+    private let treeSpacingMeters: Double = 15
+
+    private func placedTrees(origin: CLLocationCoordinate2D, rotation: Double, camera: StreetCamera) -> [PlacedTree] {
+        var result: [PlacedTree] = []
+        let fadeStart = treeRangeMeters * 0.7
+
+        for road in roads where road.roadClass == .residential || road.roadClass == .secondary {
+            let start = rotate(WorldProjection.offset(from: origin, to: road.start), by: rotation)
+            let end = rotate(WorldProjection.offset(from: origin, to: road.end), by: rotation)
+            let length = hypot(end.dx - start.dx, end.dy - start.dy)
+            guard length > 16 else { continue }
+            let middle = Vector2(dx: (start.dx + end.dx) / 2, dy: (start.dy + end.dy) / 2)
+            guard hypot(middle.dx, middle.dy) - length / 2 < treeRangeMeters else { continue }
+
+            let along = Vector2(dx: (end.dx - start.dx) / length, dy: (end.dy - start.dy) / length)
+            let across = Vector2(dx: -along.dy, dy: along.dx)
+            let sideOffset = roadWidthMeters(for: road.roadClass) / 2 + sidewalkWidthMeters(for: road.roadClass) * 0.55
+            let count = Int((length - 12) / treeSpacingMeters)
+            guard count > 0 else { continue }
+
+            for index in 0..<count {
+                for (sideIndex, side) in [-1.0, 1.0].enumerated() {
+                    let hash = windowSeed(buildingID: road.id, wallIndex: index * 2 + sideIndex)
+                    guard hash % 100 < 55 else { continue }
+                    let distanceAlong = 6 + (Double(index) + 0.5) * treeSpacingMeters
+                    let position = Vector2(
+                        dx: start.dx + along.dx * distanceAlong + across.dx * side * sideOffset,
+                        dy: start.dy + along.dy * distanceAlong + across.dy * side * sideOffset
+                    )
+                    let distanceFromUser = hypot(position.dx, position.dy)
+                    guard distanceFromUser < treeRangeMeters else { continue }
+                    let base = worldPoint(position)
+                    guard !isPastHorizon(base, camera: camera) else { continue }
+
+                    let height = 5 + Double((hash >> 8) % 50) / 10      // 5...10 m
+                    let radius = 1.8 + Double((hash >> 16) % 15) / 10   // 1.8...3.3 m
+                    let fade = 1 - min(max((distanceFromUser - fadeStart) / (treeRangeMeters - fadeStart), 0), 1)
+                    result.append(PlacedTree(
+                        position: position,
+                        height: height,
+                        radius: radius,
+                        distanceFromCamera: (base - camera.position).length,
+                        opacity: fade
+                    ))
+                }
+            }
+        }
+        return result.sorted { $0.distanceFromCamera > $1.distanceFromCamera }
+    }
+
+    private func drawTree(_ tree: PlacedTree, rotation: Double, camera: StreetCamera, in context: inout GraphicsContext) {
+        let light = lighting
+        let baseWorld = worldPoint(tree.position)
+        let trunkWorld = worldPoint(tree.position, height: tree.height * 0.55)
+        let canopyWorld = worldPoint(tree.position, height: tree.height * 0.72)
+
+        let baseLocal = camera.toCamera(baseWorld)
+        let canopyLocal = camera.toCamera(canopyWorld)
+        guard baseLocal.z > camera.nearPlane, canopyLocal.z > camera.nearPlane else { return }
+
+        let basePoint = camera.project(baseLocal)
+        let trunkPoint = camera.project(camera.toCamera(trunkWorld))
+        let canopyPoint = camera.project(canopyLocal)
+        let edgePoint = camera.project(Vector3(x: canopyLocal.x + tree.radius, y: canopyLocal.y, z: canopyLocal.z))
+        let radiusPoints = abs(edgePoint.x - canopyPoint.x)
+        guard radiusPoints > 0.8 else { return }
+        let opacity = tree.opacity
+
+        // Contact shadow under the canopy.
+        if light.shadowOpacity > 0 {
+            let shadowRect = CGRect(
+                x: basePoint.x - radiusPoints * 0.9,
+                y: basePoint.y - radiusPoints * 0.25,
+                width: radiusPoints * 1.8,
+                height: radiusPoints * 0.5
+            )
+            context.fill(Path(ellipseIn: shadowRect), with: .color(.black.opacity(0.22 * opacity)))
+        }
+
+        var trunk = Path()
+        trunk.move(to: basePoint)
+        trunk.addLine(to: trunkPoint)
+        context.stroke(
+            trunk,
+            with: .color(light.color("5A4636", brightness: light.groundBrightness).opacity(opacity)),
+            lineWidth: max(1, radiusPoints * 0.14)
+        )
+
+        // Canopy: dark underside, mid body, lit top — three stacked
+        // ellipses read as a rounded crown.
+        let leaf = "4F7F4C"
+        let under = CGRect(
+            x: canopyPoint.x - radiusPoints,
+            y: canopyPoint.y - radiusPoints * 0.62 + radiusPoints * 0.18,
+            width: radiusPoints * 2,
+            height: radiusPoints * 1.5
+        )
+        context.fill(Path(ellipseIn: under), with: .color(light.color(leaf, brightness: light.roofBrightness * 0.55).opacity(opacity)))
+        let body = CGRect(
+            x: canopyPoint.x - radiusPoints * 0.92,
+            y: canopyPoint.y - radiusPoints * 0.78,
+            width: radiusPoints * 1.84,
+            height: radiusPoints * 1.5
+        )
+        context.fill(Path(ellipseIn: body), with: .color(light.color(leaf, brightness: light.roofBrightness * 0.85).opacity(opacity)))
+        let top = CGRect(
+            x: canopyPoint.x - radiusPoints * 0.55,
+            y: canopyPoint.y - radiusPoints * 0.95,
+            width: radiusPoints * 1.1,
+            height: radiusPoints * 0.8
+        )
+        context.fill(Path(ellipseIn: top), with: .color(light.color("6FA06A", brightness: light.roofBrightness).opacity(0.85 * opacity)))
     }
 
     // MARK: - Buildings
@@ -655,26 +870,33 @@ struct WorldView: View {
         knockout.blendMode = .destinationOut
         knockout.fill(silhouette, with: .color(.black.opacity(opacity)))
 
-        let tint = categoryTint(building.category)
+        let light = lighting
+        let sun = rotate(light.sunDirection, by: frame.rotation)
+        let wallBase = categoryBaseHex(building.category)
 
         for wall in walls {
-            // Walls read as "in shadow" relative to the roof — a flat,
-            // cheap stand-in for real per-face lighting. Tinted (faintly)
-            // by `building.category` so homes vs. businesses vs. everything
-            // else are tellable apart at a glance, without getting anywhere
-            // near bold enough to read as a "colored building."
-            // Brighter toward the roofline, like light catching the top of
-            // a facade — gives each wall a sense of height.
+            // Per-face lighting: outward normal from the (CCW) footprint
+            // edge, lit by how squarely it faces the sun.
+            let a = item.footprint[wall.index]
+            let b = item.footprint[(wall.index + 1) % count]
+            let edge = b - a
+            let edgeLength = max(hypot(edge.dx, edge.dy), 0.0001)
+            let normal = Vector2(dx: edge.dy / edgeLength, dy: -edge.dx / edgeLength)
+            let wallColor = light.color(wallBase, brightness: light.faceBrightness(normal: normal, sun: sun))
+
+            context.fill(wall.path, with: .color(wallColor.opacity(opacity)))
+
+            // Ambient occlusion: walls darken where they meet the ground.
             let wallBounds = wall.path.boundingRect
             context.fill(
                 wall.path,
                 with: .linearGradient(
-                    Gradient(colors: [tint.opacity(0.02 * opacity), tint.opacity(0.14 * opacity)]),
+                    Gradient(colors: [.black.opacity(0.32 * opacity), .black.opacity(0)]),
                     startPoint: CGPoint(x: wallBounds.midX, y: wallBounds.maxY),
-                    endPoint: CGPoint(x: wallBounds.midX, y: wallBounds.minY)
+                    endPoint: CGPoint(x: wallBounds.midX, y: wallBounds.minY + wallBounds.height * 0.5)
                 )
             )
-            context.stroke(wall.path, with: .color(tint.opacity(0.40 * opacity)), lineWidth: 0.75)
+            context.stroke(wall.path, with: .color(.black.opacity(0.28 * opacity)), lineWidth: 0.6)
 
             drawWindows(
                 on: wall.corners,
@@ -690,30 +912,30 @@ struct WorldView: View {
         }
 
         if let roofPath {
-            context.fill(roofPath, with: .color(tint.opacity(0.15 * opacity)))
-            context.stroke(roofPath, with: .color(tint.opacity(0.62 * opacity)), lineWidth: 0.9)
+            context.fill(roofPath, with: .color(light.color("85888F", brightness: light.roofBrightness).opacity(opacity)))
+            context.stroke(roofPath, with: .color(.black.opacity(0.30 * opacity)), lineWidth: 0.7)
 
             // Parapet: an inset outline just inside the roof edge.
             let roofCenter = roof.reduce(Vector3(x: 0, y: 0, z: 0), +) * (1 / Double(roof.count))
             let parapet = roof.map { roofCenter + ($0 - roofCenter) * 0.84 }
             if let screen = camera.projectPolygon(parapet) {
-                context.stroke(Path.polygon(screen), with: .color(tint.opacity(0.26 * opacity)), lineWidth: 0.6)
+                context.stroke(
+                    Path.polygon(screen),
+                    with: .color(light.color("B7BAC0", brightness: light.roofBrightness).opacity(0.55 * opacity)),
+                    lineWidth: 0.7
+                )
             }
         }
     }
 
-    /// Residential stays plain white — the look everything already had —
-    /// so homes (by far the most common category) don't visually change.
-    /// Commercial picks up the same warm tone `drawWindows` already uses
-    /// for a lit window, so a storefront reads as "the lively one."
-    /// `.other` (civic/unclassified) gets a cool, neutral tint distinct
-    /// from both. All three stay within the walls/roofs' existing
-    /// opacity range — only the hue changes, never how solid anything looks.
-    private func categoryTint(_ category: BuildingCategory) -> Color {
+    /// Base wall color per category — plain stucco for homes, warmer
+    /// brick-ish for businesses, cool grey for civic/unclassified. Lighting
+    /// then darkens, warms or cools it per face.
+    private func categoryBaseHex(_ category: BuildingCategory) -> String {
         switch category {
-        case .residential: return TeslaStyle.structure
-        case .commercial: return TeslaStyle.structureCommercial
-        case .other: return TeslaStyle.structureOther
+        case .residential: return "D6CCBC"
+        case .commercial: return "BBA797"
+        case .other: return "AEB7C2"
         }
     }
 
@@ -800,6 +1022,7 @@ struct WorldView: View {
             return bottom + (top - bottom) * v
         }
 
+        let light = lighting
         var rng = SeededGenerator(seed: windowSeed(buildingID: buildingID, wallIndex: wallIndex))
         var lit = Path()
         var unlit = Path()
@@ -811,7 +1034,7 @@ struct WorldView: View {
                 // Drawn before any early-out, so each window's lit/unlit
                 // state stays tied to its grid slot no matter which other
                 // windows get clipped this frame.
-                let isLit = Double.random(in: 0..<1, using: &rng) < litWindowProbability
+                let isLit = Double.random(in: 0..<1, using: &rng) < light.litWindowProbability
 
                 let u = (Double(column) + 0.5) / Double(columns)
                 let v = (Double(row) + 0.5) / Double(rows)
@@ -832,8 +1055,9 @@ struct WorldView: View {
             }
         }
 
-        context.fill(lit, with: .color(TeslaStyle.windowLit.opacity(0.30 * opacity)))
-        context.fill(unlit, with: .color(.white.opacity(0.035 * opacity)))
+        // Dark reflective glass by day, warm interior glow where lit.
+        context.fill(unlit, with: .color(light.color("7C97B6", brightness: light.roofBrightness * 0.5).opacity(0.85 * opacity)))
+        context.fill(lit, with: .color(Color(hex: "FFD98A").opacity(light.litWindowOpacity * opacity)))
     }
 
     /// Same FNV-1a mixing `PlaceholderCityGenerator.seed(for:)` uses for

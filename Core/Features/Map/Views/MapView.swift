@@ -79,7 +79,9 @@ struct MapView: View {
                 movementState: model.movementState,
                 roads: roads,
                 buildings: buildings,
-                renderRadiusMeters: renderRadiusMeters
+                renderRadiusMeters: renderRadiusMeters,
+                timeOfDay: model.timeOfDayCondition,
+                weather: model.weatherCondition
             )
             // Pinned to wherever `WorldView`'s camera projects the user's
             // feet — low on screen, not dead center.

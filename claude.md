@@ -32,16 +32,17 @@ The name "Drift" was chosen because it signals motion without urgency — poetic
 
 ---
 
-## Visual Direction v2 — "Instrument Cluster" (Tesla FSD-inspired)
+## Visual Direction v2 — "Sim" (Tesla FSD-inspired, realistic)
 
-The map now borrows the look of Tesla's FSD visualization and UI. Tokens live in `Core/UI/Theme/TeslaStyle.swift`.
+The world is rendered like a driving sim / FSD visualization, but the **theme gradients below are unchanged and still fill the sky at full strength**. Tokens: `Core/UI/Theme/TeslaStyle.swift`; lighting: `Core/Features/Map/SimLighting.swift`.
 
-- **Canvas:** near-black graphite (`TeslaBackdrop`). The theme gradient is kept but demoted to a sky/horizon glow that fades out toward the ground, so weather and time still set the mood. (This supersedes "themes never go fully dark" for the ground plane.)
-- **Roads:** opaque graphite asphalt with a thin pale edge; crisp near-white lane dashes.
-- **Buildings:** neutral cool-grey wireframe-style blocks (thin bright edges, very low fill), dim windows.
-- **Path ribbon:** electric-blue (#3E6AE1 / #6C9BFF) ribbon ahead of the user that fades with distance, like FSD's planned path.
-- **Ego marker:** white core, blue glow + pulsing ring (speed-aware pulse unchanged).
-- **HUD:** quiet top status strip (clock + weather) and a large light-weight speed readout bottom-left. Controls use `.teslaGlass()` dark frosted tiles.
+- **Sky / themes:** `ThemeEngine` gradient shown in full (`TeslaBackdrop`), same sway and cross-fades. Below the renderer's real horizon a light ground plane (max 24% darkening) plus pale horizon haze adds depth. Themes still never go fully dark.
+- **Lighting:** sun placed by time of day (east at sunrise, south at midday, west at sunset); each wall is shaded by its facing; shadows fall away from the sun; overcast weather flattens light and removes shadows; windows glow more at dusk/night.
+- **Roads:** asphalt, lighter concrete sidewalks with a curb line, amber double center line and dashed lane dividers on arterials, edge lines, zebra crosswalks at intersections, fading into the haze toward the horizon.
+- **Buildings:** solid, lit facades (stucco / brick-ish / grey by category), ambient occlusion at the base, reflective glass windows, roofs with a parapet outline.
+- **Street trees** along residential and secondary roads, depth-sorted with buildings.
+- **Path ribbon + ego marker:** FSD-style electric-blue (#3E6AE1) path ahead of the user and a glowing blue/white marker.
+- **HUD:** quiet top status strip (clock + weather) and a large light-weight speed readout; controls use `.teslaGlass()` dark frosted tiles.
 
 ---
 

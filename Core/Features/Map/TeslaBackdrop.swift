@@ -2,10 +2,14 @@
 //  TeslaBackdrop.swift
 //  Dritft
 //
-//  The map's bottom layer in the new look: a graphite ground with the
-//  active theme's gradient demoted to a sky/horizon glow. Weather and time
-//  still set the mood — they just tint the atmosphere instead of flooding
-//  the whole screen.
+//  The map's bottom layer. The theme gradient from `ThemeEngine` is shown
+//  in full — same colors, same slow sway, same cross-fades — as the sky.
+//  On top of it, a gentle ground plane below the renderer's real horizon
+//  adds depth: slightly darker toward the viewer, with a pale haze right at
+//  the horizon (aerial perspective), so streets and buildings sit on
+//  something instead of floating. It never goes dark: even at its darkest
+//  the gradient's own colors still read, per the "themes never go fully
+//  dark" rule.
 //
 
 import SwiftUI
@@ -13,45 +17,40 @@ import SwiftUI
 struct TeslaBackdrop: View {
     let theme: MapTheme
 
-    var body: some View {
-        ZStack {
-            LinearGradient(
-                colors: [TeslaStyle.canvasTop, TeslaStyle.canvasBottom],
-                startPoint: .top,
-                endPoint: .bottom
-            )
+    /// How much the ground darkens at the very bottom of the screen.
+    private let groundDarkening: Double = 0.24
 
-            // The theme gradient, kept in motion by the existing sway and
-            // cross-fade, but faded out toward the ground so it reads as
-            // sky.
-            GradientBackground(theme: theme)
-                .opacity(0.78)
-                .mask(
-                    LinearGradient(
-                        stops: [
-                            .init(color: .white, location: 0.0),
-                            .init(color: .white.opacity(0.55), location: 0.28),
-                            .init(color: .white.opacity(0.0), location: 0.52),
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
+    var body: some View {
+        GeometryReader { proxy in
+            let horizon = WorldView.horizonFraction(width: proxy.size.width, height: proxy.size.height)
+
+            ZStack {
+                // The original theme gradient, untouched.
+                GradientBackground(theme: theme)
+
+                // Ground plane: starts clear at the horizon, deepens toward
+                // the viewer.
+                LinearGradient(
+                    stops: [
+                        .init(color: .black.opacity(0), location: horizon),
+                        .init(color: .black.opacity(groundDarkening * 0.45), location: horizon + (1 - horizon) * 0.25),
+                        .init(color: .black.opacity(groundDarkening), location: 1),
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
                 )
 
-            // Soft horizon haze where sky meets ground.
-            LinearGradient(
-                colors: [.clear, TeslaStyle.accent.opacity(0.07), .clear],
-                startPoint: UnitPoint(x: 0.5, y: 0.30),
-                endPoint: UnitPoint(x: 0.5, y: 0.60)
-            )
-
-            // Vignette keeps edges calm and focuses the eye on the road.
-            RadialGradient(
-                colors: [.clear, .black.opacity(0.45)],
-                center: UnitPoint(x: 0.5, y: 0.65),
-                startRadius: 180,
-                endRadius: 620
-            )
+                // Atmospheric haze hugging the horizon line.
+                LinearGradient(
+                    stops: [
+                        .init(color: .white.opacity(0), location: max(horizon - 0.05, 0)),
+                        .init(color: .white.opacity(0.22), location: horizon),
+                        .init(color: .white.opacity(0), location: min(horizon + 0.10, 1)),
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            }
         }
         .ignoresSafeArea()
         .allowsHitTesting(false)
