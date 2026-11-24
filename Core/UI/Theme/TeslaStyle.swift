@@ -20,6 +20,10 @@ enum TeslaStyle {
     // MARK: Geometry
     /// Asphalt fill, drawn at per-class opacity over the canvas.
     static let asphalt = Color(hex: "2A2E35")
+    /// Sidewalks sit between the canvas and the asphalt in brightness.
+    static let sidewalk = Color(hex: "1B1E23")
+    /// Amber double-center line on arterials.
+    static let centerLine = Color(hex: "D9B24A")
     /// Lane lines and road edges.
     static let laneLine = Color(hex: "E8EBF0")
     /// Buildings: neutral cool grey, like FSD's rendered structures.

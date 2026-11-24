@@ -154,6 +154,14 @@ struct WorldView: View {
     private let maxSwooshDegrees: Double = 7
 
     @State private var motion = WorldMotion()
+    /// Which road endpoints are real intersections (3+ roads meeting) —
+    /// recomputed only when the fetched road set changes, not every frame.
+    @State private var intersectionCache = IntersectionCache()
+
+    /// Roads start dissolving at this distance ahead and are gone by the
+    /// end distance (meters).
+    private let groundFadeStartMeters: Double = 28
+    private let groundFadeEndMeters: Double = 95
 
     var body: some View {
         TimelineView(.animation) { timeline in
@@ -167,6 +175,7 @@ struct WorldView: View {
                 // level, buildings stand on top of them.
                 drawRoads(origin: frame.origin, rotation: frame.rotation, camera: camera, in: &context)
                 drawPathRibbon(camera: camera, in: &context)
+                fadeGroundIntoDistance(camera: camera, in: &context)
 
                 let skyClip = skyRegion(camera: camera, size: size)
                 for item in sortedBuildings(origin: frame.origin, rotation: frame.rotation, camera: camera) {
@@ -339,14 +348,16 @@ struct WorldView: View {
     /// (sin θ, cos θ) in (east, north), and rotating it CCW by θ lands it
     /// on (0, 1).
     private func drawRoads(origin: CLLocationCoordinate2D, rotation: Double, camera: StreetCamera, in context: inout GraphicsContext) {
-        // One path per `RoadClass`, filled once — overlapping quads (at
-        // intersections, and where a road's own segments meet) then fill
-        // as a single shape instead of stacking their opacity. Bucketing
-        // by class instead of literal compass orientation is what lets a
-        // dense grid (e.g. SF) read as "big through-street vs. small
-        // alley" instead of every line looking the same weight.
-        var pathsByClass: [RoadClass: Path] = [:]
-        var centerDashes = Path()
+        // Everything is accumulated into a handful of shared paths and
+        // filled once each, so overlapping quads (junctions, a road's own
+        // segment joints) merge into one shape instead of stacking opacity.
+        var asphaltByClass: [RoadClass: Path] = [:]
+        var sidewalks = Path()
+        var dashes = Path()        // white dashed center line / lane dividers
+        var edgeLines = Path()     // solid white edge lines
+        var doubleCenter = Path()  // amber double center line (arterials)
+        var crosswalks = Path()
+        let intersections = intersectionCache.keys(for: roads)
 
         for road in roads {
             let start = rotate(WorldProjection.offset(from: origin, to: road.start), by: rotation)
@@ -366,8 +377,18 @@ struct WorldView: View {
                     dy: start.dy + (end.dy - start.dy) * t + across.dy * offset
                 )
             }
-            let halfWidth = roadWidthMeters(for: road.roadClass) / 2
-            let halfDash = centerDashWidthMeters / 2
+            /// A strip between two across-offsets over `t0...t1`, lifted
+            /// onto the curved ground and projected.
+            func strip(_ t0: Double, _ t1: Double, _ o0: Double, _ o1: Double, lift: Double = 0) -> Path? {
+                let corners = [along(t0, o0), along(t1, o0), along(t1, o1), along(t0, o1)]
+                guard let screen = camera.projectPolygon(corners.map { worldPoint($0, height: lift) }) else { return nil }
+                return Path.polygon(screen)
+            }
+
+            let roadClass = road.roadClass
+            let width = roadWidthMeters(for: roadClass)
+            let halfWidth = width / 2
+            let sidewalk = sidewalkWidthMeters(for: roadClass)
             let dashFraction = min(centerDashLengthMeters / (length / Double(steps)), 1)
 
             for step in 0..<steps {
@@ -376,40 +397,112 @@ struct WorldView: View {
                 let middle = worldPoint(along((t0 + t1) / 2, 0))
                 guard !isPastHorizon(middle, camera: camera) else { continue }
 
-                let quad = [along(t0, -halfWidth), along(t1, -halfWidth), along(t1, halfWidth), along(t0, halfWidth)]
-                guard let screen = camera.projectPolygon(quad.map { worldPoint($0) }) else { continue }
-                pathsByClass[road.roadClass, default: Path()].addPath(Path.polygon(screen))
+                if let asphalt = strip(t0, t1, -halfWidth, halfWidth) {
+                    asphaltByClass[roadClass, default: Path()].addPath(asphalt)
+                }
+                // Alleys, footways and driveways carry no sidewalk, paint
+                // or crosswalks — they read as visibly lesser than streets.
+                guard roadClass != .minor else { continue }
 
-                // One dash at the start of each sample, so dash spacing is
-                // exactly `roadSampleMeters`. Skipped for `.minor` roads
-                // (alleys, footways, driveways) — real ones don't carry a
-                // painted lane line, and leaving it off helps them read as
-                // visibly smaller/lesser than a real street.
-                guard road.roadClass != .minor else { continue }
+                if sidewalk > 0 {
+                    if let left = strip(t0, t1, -halfWidth - sidewalk, -halfWidth, lift: -0.01) { sidewalks.addPath(left) }
+                    if let right = strip(t0, t1, halfWidth, halfWidth + sidewalk, lift: -0.01) { sidewalks.addPath(right) }
+                }
+
+                // Painted markings sit a hair above the asphalt.
                 let dashEnd = t0 + (t1 - t0) * dashFraction
-                let dash = [along(t0, -halfDash), along(dashEnd, -halfDash), along(dashEnd, halfDash), along(t0, halfDash)]
-                if let dashScreen = camera.projectPolygon(dash.map { worldPoint($0, height: 0.02) }) {
-                    centerDashes.addPath(Path.polygon(dashScreen))
+                switch roadClass {
+                case .major:
+                    // Double center line, plus dashed dividers between lanes.
+                    if let a = strip(t0, t1, -0.26, -0.14, lift: 0.02) { doubleCenter.addPath(a) }
+                    if let b = strip(t0, t1, 0.14, 0.26, lift: 0.02) { doubleCenter.addPath(b) }
+                    for side in [-1.0, 1.0] {
+                        let offset = side * width / 4
+                        if let d = strip(t0, dashEnd, offset - 0.07, offset + 0.07, lift: 0.02) { dashes.addPath(d) }
+                    }
+                case .secondary, .residential:
+                    if let d = strip(t0, dashEnd, -0.075, 0.075, lift: 0.02) { dashes.addPath(d) }
+                case .minor:
+                    break
+                }
+                if roadClass == .major || roadClass == .secondary {
+                    for side in [-1.0, 1.0] {
+                        let offset = side * (halfWidth - 0.4)
+                        if let e = strip(t0, t1, offset - 0.07, offset + 0.07, lift: 0.02) { edgeLines.addPath(e) }
+                    }
+                }
+            }
+
+            // Zebra crosswalks just inside any end that meets 3+ roads.
+            guard roadClass != .minor, length > 14 else { continue }
+            let barCount = Int(width / 1.0)
+            for atStart in [true, false] {
+                guard intersections.contains(IntersectionKey(atStart ? road.start : road.end)) else { continue }
+                let ta = atStart ? 1.5 / length : 1 - 4.5 / length
+                let tb = atStart ? 4.5 / length : 1 - 1.5 / length
+                guard !isPastHorizon(worldPoint(along((ta + tb) / 2, 0)), camera: camera) else { continue }
+                for index in 0..<barCount {
+                    let offset = -halfWidth + 0.75 + Double(index) * 1.0
+                    guard offset + 0.25 <= halfWidth - 0.4 else { break }
+                    if let bar = strip(ta, tb, offset - 0.25, offset + 0.25, lift: 0.03) { crosswalks.addPath(bar) }
                 }
             }
         }
 
-        // Ground-level surfaces fill a lot more of the screen from street
-        // level than they did from overhead, so these sit back closer to
-        // claude.md's "whisper" opacities than the old 0.42/0.34 strokes.
-        // Tesla/FSD look: opaque graphite asphalt with a thin pale edge.
-        // Each class is stroked first and filled on top, so the stroke only
-        // survives along the outside of the shape (internal seams between
-        // sample quads are covered by the fill), and drawing minor → major
-        // keeps junctions clean with the bigger road winning.
+        // Layered back to front: sidewalks, then asphalt minor → major (so
+        // the bigger road wins at junctions), then paint.
+        context.stroke(sidewalks, with: .color(TeslaStyle.laneLine.opacity(0.10)), lineWidth: 1)
+        context.fill(sidewalks, with: .color(TeslaStyle.sidewalk))
+
         let drawOrder: [RoadClass] = [.minor, .residential, .secondary, .major]
         for roadClass in drawOrder {
-            guard let path = pathsByClass[roadClass] else { continue }
+            guard let path = asphaltByClass[roadClass] else { continue }
+            // Stroked before filled, so only the outer edge survives —
+            // internal seams between sample quads are covered by the fill.
             let edgeOpacity: Double = roadClass == .minor ? 0.10 : (roadClass == .major ? 0.30 : 0.22)
             context.stroke(path, with: .color(TeslaStyle.laneLine.opacity(edgeOpacity)), lineWidth: 1.4)
             context.fill(path, with: .color(TeslaStyle.asphalt.opacity(roadOpacity(for: roadClass))))
         }
-        context.fill(centerDashes, with: .color(TeslaStyle.laneLine.opacity(0.78)))
+        context.fill(edgeLines, with: .color(TeslaStyle.laneLine.opacity(0.55)))
+        context.fill(dashes, with: .color(TeslaStyle.laneLine.opacity(0.78)))
+        context.fill(doubleCenter, with: .color(TeslaStyle.centerLine.opacity(0.85)))
+        context.fill(crosswalks, with: .color(TeslaStyle.laneLine.opacity(0.62)))
+    }
+
+    /// Curb-to-building sidewalk depth, meters, by road class.
+    private func sidewalkWidthMeters(for roadClass: RoadClass) -> Double {
+        switch roadClass {
+        case .major: return 2.6
+        case .secondary: return 2.2
+        case .residential: return 1.7
+        case .minor: return 0
+        }
+    }
+
+    /// Erases the ground (roads, sidewalks, path) progressively toward the
+    /// horizon, so streets dissolve into the dark instead of ending in a
+    /// hard line — the way FSD's visualization fades distant geometry.
+    /// Uses destination-out, the same trick buildings use to occlude, so the
+    /// backdrop shows through rather than a fog color having to match it.
+    private func fadeGroundIntoDistance(camera: StreetCamera, in context: inout GraphicsContext) {
+        func screenY(_ distance: Double) -> CGFloat {
+            camera.project(camera.toCamera(worldPoint(Vector2(dx: 0, dy: distance)))).y
+        }
+        let yNear = screenY(groundFadeStartMeters)
+        let yFar = screenY(groundFadeEndMeters)
+        guard yNear.isFinite, yFar.isFinite, yNear > yFar else { return }
+
+        var eraser = context
+        eraser.blendMode = .destinationOut
+        let rect = CGRect(x: -5000, y: -5000, width: 10_000, height: 5000 + yNear)
+        eraser.fill(
+            Path(rect),
+            with: .linearGradient(
+                Gradient(colors: [.black, .black.opacity(0)]),
+                startPoint: CGPoint(x: 0, y: yFar),
+                endPoint: CGPoint(x: 0, y: yNear)
+            )
+        )
     }
 
     /// One floating label per nearby named street, placed at whichever of
@@ -570,7 +663,17 @@ struct WorldView: View {
             // by `building.category` so homes vs. businesses vs. everything
             // else are tellable apart at a glance, without getting anywhere
             // near bold enough to read as a "colored building."
-            context.fill(wall.path, with: .color(tint.opacity(0.07 * opacity)))
+            // Brighter toward the roofline, like light catching the top of
+            // a facade — gives each wall a sense of height.
+            let wallBounds = wall.path.boundingRect
+            context.fill(
+                wall.path,
+                with: .linearGradient(
+                    Gradient(colors: [tint.opacity(0.02 * opacity), tint.opacity(0.14 * opacity)]),
+                    startPoint: CGPoint(x: wallBounds.midX, y: wallBounds.maxY),
+                    endPoint: CGPoint(x: wallBounds.midX, y: wallBounds.minY)
+                )
+            )
             context.stroke(wall.path, with: .color(tint.opacity(0.40 * opacity)), lineWidth: 0.75)
 
             drawWindows(
@@ -589,6 +692,13 @@ struct WorldView: View {
         if let roofPath {
             context.fill(roofPath, with: .color(tint.opacity(0.15 * opacity)))
             context.stroke(roofPath, with: .color(tint.opacity(0.62 * opacity)), lineWidth: 0.9)
+
+            // Parapet: an inset outline just inside the roof edge.
+            let roofCenter = roof.reduce(Vector3(x: 0, y: 0, z: 0), +) * (1 / Double(roof.count))
+            let parapet = roof.map { roofCenter + ($0 - roofCenter) * 0.84 }
+            if let screen = camera.projectPolygon(parapet) {
+                context.stroke(Path.polygon(screen), with: .color(tint.opacity(0.26 * opacity)), lineWidth: 0.6)
+            }
         }
     }
 
@@ -849,4 +959,41 @@ private extension Path {
         renderRadiusMeters: 160
     )
     .background(Color.black)
+}
+
+// MARK: - Intersections
+
+/// A road endpoint snapped to ~1m, so two segments that meet at the same OSM
+/// node compare equal despite floating-point noise.
+private struct IntersectionKey: Hashable {
+    let lat: Int
+    let lon: Int
+
+    init(_ coordinate: CLLocationCoordinate2D) {
+        lat = Int((coordinate.latitude * 100_000).rounded())
+        lon = Int((coordinate.longitude * 100_000).rounded())
+    }
+}
+
+/// Finds endpoints where three or more road segments meet. A reference type
+/// so `WorldView` can fill it from inside the `Canvas` closure; it only
+/// recomputes when the road set actually changes.
+private final class IntersectionCache {
+    private var roadCount = -1
+    private var firstLatitude: Double = 0
+    private var cached: Set<IntersectionKey> = []
+
+    func keys(for roads: [RoadSegment]) -> Set<IntersectionKey> {
+        let firstLat = roads.first?.start.latitude ?? 0
+        if roads.count == roadCount, firstLat == firstLatitude { return cached }
+        var degree: [IntersectionKey: Int] = [:]
+        for road in roads {
+            degree[IntersectionKey(road.start), default: 0] += 1
+            degree[IntersectionKey(road.end), default: 0] += 1
+        }
+        cached = Set(degree.filter { $0.value >= 3 }.keys)
+        roadCount = roads.count
+        firstLatitude = firstLat
+        return cached
+    }
 }
