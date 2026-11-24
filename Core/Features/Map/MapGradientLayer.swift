@@ -18,7 +18,7 @@ struct MapGradientLayer: View {
     @ObservedObject var model: MapModel
 
     var body: some View {
-        GradientBackground(theme: model.theme)
+        TeslaBackdrop(theme: model.theme)
     }
 }
 

@@ -32,6 +32,19 @@ The name "Drift" was chosen because it signals motion without urgency — poetic
 
 ---
 
+## Visual Direction v2 — "Instrument Cluster" (Tesla FSD-inspired)
+
+The map now borrows the look of Tesla's FSD visualization and UI. Tokens live in `Core/UI/Theme/TeslaStyle.swift`.
+
+- **Canvas:** near-black graphite (`TeslaBackdrop`). The theme gradient is kept but demoted to a sky/horizon glow that fades out toward the ground, so weather and time still set the mood. (This supersedes "themes never go fully dark" for the ground plane.)
+- **Roads:** opaque graphite asphalt with a thin pale edge; crisp near-white lane dashes.
+- **Buildings:** neutral cool-grey wireframe-style blocks (thin bright edges, very low fill), dim windows.
+- **Path ribbon:** electric-blue (#3E6AE1 / #6C9BFF) ribbon ahead of the user that fades with distance, like FSD's planned path.
+- **Ego marker:** white core, blue glow + pulsing ring (speed-aware pulse unchanged).
+- **HUD:** quiet top status strip (clock + weather) and a large light-weight speed readout bottom-left. Controls use `.teslaGlass()` dark frosted tiles.
+
+---
+
 ## Theme System
 
 Drift's visual identity is driven by one function that takes two inputs — **time of day** and **weather condition** — and outputs a `MapTheme` (gradient colors + layer opacities). The gradient runs full screen height, top to bottom, with no hard stops.

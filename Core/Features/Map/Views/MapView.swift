@@ -52,6 +52,25 @@ struct MapView: View {
 
     var body: some View {
         ZStack {
+            mapLayers
+            hud
+        }
+        .onChange(of: model.currentLocation, initial: true) { _, location in
+            guard let location else { return }
+            Task {
+                await roadNetwork.refresh(near: location.coordinate, radiusMeters: renderRadiusMeters)
+            }
+            Task {
+                await buildingNetwork.refresh(near: location.coordinate, radiusMeters: renderRadiusMeters)
+            }
+        }
+        .onAppear { model.start() }
+        .onDisappear { model.stop() }
+    }
+
+    /// Every full-bleed layer (gradient backdrop, world, ego marker).
+    private var mapLayers: some View {
+        ZStack {
             MapGradientLayer(model: model)
             WorldView(
                 origin: streetOrigin,
@@ -79,17 +98,26 @@ struct MapView: View {
         // too) — otherwise safe-area insets would shrink its frame and pull
         // the pulse dot off the user's projected position.
         .ignoresSafeArea()
-        .onChange(of: model.currentLocation, initial: true) { _, location in
-            guard let location else { return }
-            Task {
-                await roadNetwork.refresh(near: location.coordinate, radiusMeters: renderRadiusMeters)
+    }
+
+    /// Tesla-style heads-up overlay: status strip on top, speed bottom-left.
+    /// Sits on the safe area (unlike the full-bleed layers beneath it) so
+    /// nothing hides under the notch or home indicator.
+    private var hud: some View {
+        VStack {
+            TopPillView(weather: model.weatherCondition, timeOfDay: model.timeOfDayCondition)
+                .padding(.top, 6)
+            Spacer()
+            HStack {
+                SpeedPillView(
+                    speedMetersPerSecond: model.currentLocation?.speed ?? -1,
+                    movementState: model.movementState
+                )
+                Spacer()
             }
-            Task {
-                await buildingNetwork.refresh(near: location.coordinate, radiusMeters: renderRadiusMeters)
-            }
+            .padding(.horizontal, 24)
+            .padding(.bottom, 12)
         }
-        .onAppear { model.start() }
-        .onDisappear { model.stop() }
     }
 
     /// Closest point on the closest real road to the user, plus that road's

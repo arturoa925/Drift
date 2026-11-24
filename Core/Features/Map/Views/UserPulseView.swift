@@ -40,41 +40,36 @@ struct UserPulseView: View {
             // would produce, with the easing built in for free.
             let pulse = sin(phase * .pi)
 
+            // FSD-style ego marker: a soft blue glow, a thin pulsing ring,
+            // and a crisp white core — the one bright thing on a dark map.
             ZStack {
                 Circle()
-                    .stroke(Color.white.opacity(0.45), lineWidth: pulseRingLineWidth)
+                    .fill(
+                        RadialGradient(
+                            colors: [TeslaStyle.accentGlow.opacity(0.45), .clear],
+                            center: .center,
+                            startRadius: 2,
+                            endRadius: 30
+                        )
+                    )
+                    .frame(width: 60, height: 60)
+                    .opacity(0.55 + pulse * 0.45)
+
+                Circle()
+                    .stroke(TeslaStyle.accentGlow.opacity(0.7), lineWidth: pulseRingLineWidth)
                     .frame(width: pulseRingDiameter, height: pulseRingDiameter)
                     .scaleEffect(1 + pulse * 0.22)
                     .opacity(0.40 + pulse * 0.48)
 
-                // Reproduces the spec's `0 0 0 3px rgba(255,255,255,.30)`
-                // shadow ring: CSS's zero-blur spread shadow is just a
-                // solid ring exactly `shadowRingWidth` wide around the
-                // shape, which a same-color circle underneath (sized up by
-                // the spread on both sides) draws directly.
                 Circle()
-                    .fill(Color.white.opacity(0.30))
+                    .fill(TeslaStyle.accent.opacity(0.9))
                     .frame(width: dotDiameter + shadowRingWidth * 2, height: dotDiameter + shadowRingWidth * 2)
 
                 Circle()
-                    .fill(dotColor)
+                    .fill(Color.white)
                     .frame(width: dotDiameter, height: dotDiameter)
             }
         }
-    }
-
-    /// Storm and night are the only themes with a non-white dot — everything
-    /// else (including snow, called out explicitly in claude.md) stays
-    /// white. Storm is checked first since weather always outranks time of
-    /// day whenever it's strong enough to override it.
-    private var dotColor: Color {
-        if weatherCondition == .storm {
-            return Color(hex: "D8B4FE")
-        }
-        if !weatherCondition.overridesTimeOfDay && timeOfDayCondition == .night {
-            return Color(hex: "BAE6FD")
-        }
-        return .white
     }
 }
 

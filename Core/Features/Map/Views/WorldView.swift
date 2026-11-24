@@ -99,10 +99,10 @@ struct WorldView: View {
     /// line looking equally present.
     private func roadOpacity(for roadClass: RoadClass) -> Double {
         switch roadClass {
-        case .major: return 0.42
-        case .secondary: return 0.34
-        case .residential: return 0.26
-        case .minor: return 0.16
+        case .major: return 1.0
+        case .secondary: return 1.0
+        case .residential: return 1.0
+        case .minor: return 0.7
         }
     }
     /// Dashed center line, real meters — the one road marking that gives
@@ -166,6 +166,7 @@ struct WorldView: View {
                 // Roads first, buildings on top — streets sit at ground
                 // level, buildings stand on top of them.
                 drawRoads(origin: frame.origin, rotation: frame.rotation, camera: camera, in: &context)
+                drawPathRibbon(camera: camera, in: &context)
 
                 let skyClip = skyRegion(camera: camera, size: size)
                 for item in sortedBuildings(origin: frame.origin, rotation: frame.rotation, camera: camera) {
@@ -276,6 +277,61 @@ struct WorldView: View {
         return path
     }
 
+    // MARK: - Path ribbon
+
+    /// FSD-style "planned path": a luminous blue ribbon that runs from the
+    /// user's feet straight ahead (the way they're facing — the scene is
+    /// already heading-rotated, so ahead is always +y) and fades into the
+    /// distance. A wide, faint underlay fakes a glow; the bright core sits
+    /// on top. Dimmer while standing still, full strength once moving.
+    private func drawPathRibbon(camera: StreetCamera, in context: inout GraphicsContext) {
+        let lengthMeters = 48.0
+        let stepMeters = 3.0
+        let steps = Int(lengthMeters / stepMeters)
+        let strength = movementState == .still ? 0.55 : 1.0
+
+        func strip(halfWidth: Double, lift: Double, from: Int, to: Int) -> Path? {
+            let y0 = Double(from) * stepMeters
+            let y1 = Double(to) * stepMeters
+            let quad = [
+                worldPoint(Vector2(dx: -halfWidth, dy: y0), height: lift),
+                worldPoint(Vector2(dx: -halfWidth, dy: y1), height: lift),
+                worldPoint(Vector2(dx: halfWidth, dy: y1), height: lift),
+                worldPoint(Vector2(dx: halfWidth, dy: y0), height: lift),
+            ]
+            guard let screen = camera.projectPolygon(quad) else { return nil }
+            return Path.polygon(screen)
+        }
+
+        for step in 0..<steps {
+            let t = Double(step) / Double(steps)
+            let fade = pow(1 - t, 1.6) * strength
+
+            if let glow = strip(halfWidth: 2.4, lift: 0.04, from: step, to: step + 1) {
+                context.fill(glow, with: .color(TeslaStyle.accent.opacity(0.16 * fade)))
+            }
+            if let core = strip(halfWidth: 1.15, lift: 0.06, from: step, to: step + 1) {
+                context.fill(core, with: .color(TeslaStyle.accentGlow.opacity(0.62 * fade)))
+            }
+            // Thin bright edge rails, like the lane-boundary lines FSD
+            // draws on either side of its path.
+            for side in [-1.0, 1.0] {
+                let y0 = Double(step) * stepMeters
+                let y1 = Double(step + 1) * stepMeters
+                let x = side * 1.15
+                let quad = [
+                    worldPoint(Vector2(dx: x - 0.05, dy: y0), height: 0.08),
+                    worldPoint(Vector2(dx: x - 0.05, dy: y1), height: 0.08),
+                    worldPoint(Vector2(dx: x + 0.05, dy: y1), height: 0.08),
+                    worldPoint(Vector2(dx: x + 0.05, dy: y0), height: 0.08),
+                ]
+                if let screen = camera.projectPolygon(quad) {
+                    context.fill(Path.polygon(screen), with: .color(Color.white.opacity(0.7 * fade)))
+                }
+            }
+        }
+    }
+
     // MARK: - Roads
 
     /// `rotation` turns raw (east, north) offsets so the user's heading
@@ -341,11 +397,19 @@ struct WorldView: View {
         // Ground-level surfaces fill a lot more of the screen from street
         // level than they did from overhead, so these sit back closer to
         // claude.md's "whisper" opacities than the old 0.42/0.34 strokes.
-        let color = Color(hex: "B4B4BE")
-        for (roadClass, path) in pathsByClass {
-            context.fill(path, with: .color(color.opacity(roadOpacity(for: roadClass))))
+        // Tesla/FSD look: opaque graphite asphalt with a thin pale edge.
+        // Each class is stroked first and filled on top, so the stroke only
+        // survives along the outside of the shape (internal seams between
+        // sample quads are covered by the fill), and drawing minor → major
+        // keeps junctions clean with the bigger road winning.
+        let drawOrder: [RoadClass] = [.minor, .residential, .secondary, .major]
+        for roadClass in drawOrder {
+            guard let path = pathsByClass[roadClass] else { continue }
+            let edgeOpacity: Double = roadClass == .minor ? 0.10 : (roadClass == .major ? 0.30 : 0.22)
+            context.stroke(path, with: .color(TeslaStyle.laneLine.opacity(edgeOpacity)), lineWidth: 1.4)
+            context.fill(path, with: .color(TeslaStyle.asphalt.opacity(roadOpacity(for: roadClass))))
         }
-        context.fill(centerDashes, with: .color(.white.opacity(0.45)))
+        context.fill(centerDashes, with: .color(TeslaStyle.laneLine.opacity(0.78)))
     }
 
     /// One floating label per nearby named street, placed at whichever of
@@ -384,11 +448,12 @@ struct WorldView: View {
             guard fade > 0 else { continue }
 
             let point = camera.project(local)
-            let text = Text(anchor.name)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.85 * fade))
+            let text = Text(anchor.name.uppercased())
+                .font(.system(size: 10, weight: .medium))
+                .tracking(1.4)
+                .foregroundStyle(TeslaStyle.textSecondary.opacity(fade))
             context.drawLayer { layer in
-                layer.addFilter(.shadow(color: .black.opacity(0.35 * fade), radius: 2, y: 0.5))
+                layer.addFilter(.shadow(color: .black.opacity(0.6 * fade), radius: 3, y: 0.5))
                 layer.draw(text, at: point)
             }
         }
@@ -505,8 +570,8 @@ struct WorldView: View {
             // by `building.category` so homes vs. businesses vs. everything
             // else are tellable apart at a glance, without getting anywhere
             // near bold enough to read as a "colored building."
-            context.fill(wall.path, with: .color(tint.opacity(0.14 * opacity)))
-            context.stroke(wall.path, with: .color(tint.opacity(0.24 * opacity)), lineWidth: 1)
+            context.fill(wall.path, with: .color(tint.opacity(0.07 * opacity)))
+            context.stroke(wall.path, with: .color(tint.opacity(0.40 * opacity)), lineWidth: 0.75)
 
             drawWindows(
                 on: wall.corners,
@@ -522,8 +587,8 @@ struct WorldView: View {
         }
 
         if let roofPath {
-            context.fill(roofPath, with: .color(tint.opacity(0.30 * opacity)))
-            context.stroke(roofPath, with: .color(tint.opacity(0.45 * opacity)), lineWidth: 1)
+            context.fill(roofPath, with: .color(tint.opacity(0.15 * opacity)))
+            context.stroke(roofPath, with: .color(tint.opacity(0.62 * opacity)), lineWidth: 0.9)
         }
     }
 
@@ -536,9 +601,9 @@ struct WorldView: View {
     /// opacity range — only the hue changes, never how solid anything looks.
     private func categoryTint(_ category: BuildingCategory) -> Color {
         switch category {
-        case .residential: return .white
-        case .commercial: return Color(hex: "FDE68A")
-        case .other: return Color(hex: "BAE6FD")
+        case .residential: return TeslaStyle.structure
+        case .commercial: return TeslaStyle.structureCommercial
+        case .other: return TeslaStyle.structureOther
         }
     }
 
@@ -657,8 +722,8 @@ struct WorldView: View {
             }
         }
 
-        context.fill(lit, with: .color(Color(hex: "FDE68A").opacity(0.55 * opacity)))
-        context.fill(unlit, with: .color(.white.opacity(0.10 * opacity)))
+        context.fill(lit, with: .color(TeslaStyle.windowLit.opacity(0.30 * opacity)))
+        context.fill(unlit, with: .color(.white.opacity(0.035 * opacity)))
     }
 
     /// Same FNV-1a mixing `PlaceholderCityGenerator.seed(for:)` uses for
